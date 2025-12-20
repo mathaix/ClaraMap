@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from clara.db.session import get_db
 from clara.models.blueprint import InterviewBlueprint
 from clara.services.blueprint_service import BlueprintService
+from clara.services.blueprint_validation import validate_blueprint
 
 router = APIRouter(prefix="/blueprints", tags=["blueprints"])
 
@@ -68,6 +69,44 @@ class BlueprintVersionSummary(BaseModel):
     change_summary: str | None
     created_at: str
     created_by: str
+
+
+class ValidationIssueResponse(BaseModel):
+    """A single validation issue."""
+
+    severity: str
+    code: str
+    message: str
+    path: str
+    agent_id: str | None
+
+
+class QualityDimensionResponse(BaseModel):
+    """Score for a quality dimension."""
+
+    name: str
+    score: float
+    weight: float
+    weighted_score: float
+    issues: list[str]
+
+
+class ValidationResponse(BaseModel):
+    """Full validation result."""
+
+    is_valid: bool
+    error_count: int
+    warning_count: int
+    issues: list[ValidationIssueResponse]
+    quality_score: float
+    quality_dimensions: list[QualityDimensionResponse]
+    ready_for_deployment: bool
+
+
+class ValidateBlueprintRequest(BaseModel):
+    """Request to validate a blueprint."""
+
+    blueprint: InterviewBlueprint
 
 
 @router.post("", response_model=BlueprintResponse, status_code=status.HTTP_201_CREATED)
@@ -311,4 +350,105 @@ async def restore_blueprint_version(
         updated_at=db_blueprint.updated_at.isoformat()
         if db_blueprint.updated_at
         else db_blueprint.created_at.isoformat(),
+    )
+
+
+@router.post("/validate", response_model=ValidationResponse)
+async def validate_blueprint_endpoint(
+    request: ValidateBlueprintRequest,
+):
+    """Validate a blueprint and return quality score.
+
+    This endpoint validates:
+    - Cross-reference integrity (question IDs, entity references, goal references)
+    - Structural completeness
+    - Quality scoring with weighted dimensions
+
+    Quality Score Weights:
+    - Completeness: 25%
+    - Coherence: 20%
+    - Question Quality: 20%
+    - Extraction Coverage: 20%
+    - Persona Quality: 15%
+
+    A score of 70+ is considered ready for deployment.
+    """
+    result = validate_blueprint(request.blueprint)
+
+    return ValidationResponse(
+        is_valid=result.is_valid,
+        error_count=result.error_count,
+        warning_count=result.warning_count,
+        issues=[
+            ValidationIssueResponse(
+                severity=issue.severity.value,
+                code=issue.code,
+                message=issue.message,
+                path=issue.path,
+                agent_id=issue.agent_id,
+            )
+            for issue in result.issues
+        ],
+        quality_score=result.quality_score,
+        quality_dimensions=[
+            QualityDimensionResponse(
+                name=dim.name,
+                score=dim.score,
+                weight=dim.weight,
+                weighted_score=dim.weighted_score,
+                issues=dim.issues,
+            )
+            for dim in result.quality_dimensions
+        ],
+        ready_for_deployment=result.ready_for_deployment,
+    )
+
+
+@router.post("/{blueprint_id}/validate", response_model=ValidationResponse)
+async def validate_stored_blueprint(
+    blueprint_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate an existing stored blueprint and return quality score."""
+    service = BlueprintService(db)
+    db_blueprint = await service.get_by_id(blueprint_id)
+
+    if not db_blueprint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Blueprint {blueprint_id} not found",
+        )
+
+    blueprint = service.to_pydantic(db_blueprint)
+    result = validate_blueprint(blueprint)
+
+    # Update quality score in database
+    await service.update_quality_score(blueprint_id, result.quality_score)
+
+    return ValidationResponse(
+        is_valid=result.is_valid,
+        error_count=result.error_count,
+        warning_count=result.warning_count,
+        issues=[
+            ValidationIssueResponse(
+                severity=issue.severity.value,
+                code=issue.code,
+                message=issue.message,
+                path=issue.path,
+                agent_id=issue.agent_id,
+            )
+            for issue in result.issues
+        ],
+        quality_score=result.quality_score,
+        quality_dimensions=[
+            QualityDimensionResponse(
+                name=dim.name,
+                score=dim.score,
+                weight=dim.weight,
+                weighted_score=dim.weighted_score,
+                issues=dim.issues,
+            )
+            for dim in result.quality_dimensions
+        ],
+        ready_for_deployment=result.ready_for_deployment,
     )
