@@ -12,13 +12,18 @@ It guides users through:
 6. Setting up synthesis rules
 """
 
+import os
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
+
+if TYPE_CHECKING:
+    pass
 
 from clara.models.blueprint import (
     AgentBlueprint,
@@ -136,10 +141,17 @@ When generating blueprint components, always explain your reasoning to help
 the user understand and refine the design."""
 
 
+# Determine the model to use based on environment
+# Use test model if no API key is available (for testing)
+_model = "anthropic:claude-sonnet-4-20250514"
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    # Use test model for testing without API key
+    _model = "test"
+
 # Create the Design Assistant agent
 # Use Sonnet for faster iteration, upgrade to Opus for production
-design_assistant = Agent(
-    "anthropic:claude-sonnet-4-20250514",
+design_assistant: Agent[DesignAssistantDeps, str] = Agent(
+    _model,
     deps_type=DesignAssistantDeps,
     retries=2,
     system_prompt=DESIGN_ASSISTANT_SYSTEM_PROMPT,
