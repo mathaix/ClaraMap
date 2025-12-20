@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from clara.api.blueprints import router as blueprints_router
 from clara.api.projects import router as projects_router
 from clara.config import settings
 from clara.db import Base, engine
@@ -57,6 +58,7 @@ async def log_requests(request: Request, call_next):
 
 # Include routers
 app.include_router(projects_router, prefix="/api/v1")
+app.include_router(blueprints_router, prefix="/api/v1")
 
 
 @app.get("/health")

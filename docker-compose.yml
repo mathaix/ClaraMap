@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: clara-postgres
+    environment:
+      POSTGRES_USER: clara
+      POSTGRES_PASSWORD: clara_dev
+      POSTGRES_DB: clara
+    ports:
+      - "5432:5432"
+    volumes:
+      - clara_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clara -d clara"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  clara_postgres_data:
