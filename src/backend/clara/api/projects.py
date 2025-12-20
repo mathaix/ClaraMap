@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from clara.db import get_db
@@ -16,8 +16,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+class TimelineValidationMixin:
+    """Mixin for timeline date validation."""
+
+    @model_validator(mode="after")
+    def validate_timeline(self):
+        if self.timeline_start and self.timeline_end:
+            if self.timeline_end <= self.timeline_start:
+                raise ValueError("timeline_end must be after timeline_start")
+        return self
+
+
 # Request/Response models
-class ProjectCreate(BaseModel):
+class ProjectCreate(TimelineValidationMixin, BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(..., min_length=1, max_length=2000)
     timeline_start: datetime | None = None
@@ -25,7 +36,7 @@ class ProjectCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(TimelineValidationMixin, BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = Field(None, min_length=1, max_length=2000)
     status: ProjectStatus | None = None
@@ -57,7 +68,7 @@ class ProjectListResponse(BaseModel):
 
 
 class ProjectDuplicate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
+    name: str | None = Field(None, min_length=1, max_length=100)
 
 
 # Endpoints
@@ -182,7 +193,7 @@ async def delete_project(
 @router.post("/{project_id}/duplicate", response_model=ProjectResponse, status_code=201)
 async def duplicate_project(
     project_id: str,
-    data: ProjectDuplicate,
+    data: ProjectDuplicate | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Duplicate a project configuration."""
@@ -190,8 +201,15 @@ async def duplicate_project(
     # TODO: Get created_by from authenticated user
     created_by = "user_placeholder"
 
+    # Get source project to generate default name if not provided
+    source = await service.get(project_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source project not found")
+
+    new_name = data.name if data and data.name else f"{source.name} (Copy)"
+
     try:
-        project = await service.duplicate(project_id, data.name, created_by)
+        project = await service.duplicate(project_id, new_name, created_by)
         if not project:
             raise HTTPException(status_code=404, detail="Source project not found")
         return project

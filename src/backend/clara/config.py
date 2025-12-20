@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/clara"
 
+    # CORS
+    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
     # Security
     secret_key: str = "dev-secret-key-change-in-production"
     algorithm: str = "HS256"

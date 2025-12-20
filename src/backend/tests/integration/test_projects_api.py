@@ -26,14 +26,28 @@ class TestProjectsAPI:
     @pytest.mark.asyncio
     async def test_create_project_validation_error(self, client):
         """Test POST /api/v1/projects with invalid data."""
+        # Missing required field
         response = await client.post(
             "/api/v1/projects",
             json={
-                "name": "X",
-                "description": "Too short",  # Less than 20 chars
+                "name": "Test Project",
+                # description is missing
             },
         )
-        
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_create_project_invalid_timeline(self, client):
+        """Test POST /api/v1/projects with end before start."""
+        response = await client.post(
+            "/api/v1/projects",
+            json={
+                "name": "Test Project",
+                "description": "A test project description",
+                "timeline_start": "2025-12-31T00:00:00Z",
+                "timeline_end": "2025-01-01T00:00:00Z",  # Before start
+            },
+        )
         assert response.status_code == 422
 
     @pytest.mark.asyncio

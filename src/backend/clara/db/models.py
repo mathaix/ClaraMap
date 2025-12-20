@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -33,6 +33,12 @@ class Project(Base):
     """Project - container for discovery initiatives."""
 
     __tablename__ = "projects"
+    __table_args__ = (
+        Index("ix_projects_name", "name"),
+        Index("ix_projects_status", "status"),
+        Index("ix_projects_deleted_at", "deleted_at"),
+        Index("ix_projects_created_by", "created_by"),
+    )
 
     id: Mapped[str] = mapped_column(String(30), primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
