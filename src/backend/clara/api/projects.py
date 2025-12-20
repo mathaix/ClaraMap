@@ -1,5 +1,6 @@
 """Projects API router."""
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,13 +11,15 @@ from clara.db import get_db
 from clara.db.models import ProjectStatus
 from clara.services.project_service import ProjectService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 # Request/Response models
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    description: str = Field(..., min_length=20, max_length=2000)
+    description: str = Field(..., min_length=1, max_length=2000)
     timeline_start: datetime | None = None
     timeline_end: datetime | None = None
     tags: list[str] = Field(default_factory=list)
@@ -24,7 +27,7 @@ class ProjectCreate(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
-    description: str | None = Field(None, min_length=20, max_length=2000)
+    description: str | None = Field(None, min_length=1, max_length=2000)
     status: ProjectStatus | None = None
     timeline_start: datetime | None = None
     timeline_end: datetime | None = None
@@ -64,6 +67,7 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new project."""
+    logger.info(f"Creating project: name={data.name}, tags={data.tags}")
     service = ProjectService(db)
     # TODO: Get created_by from authenticated user
     created_by = "user_placeholder"
@@ -77,8 +81,10 @@ async def create_project(
             timeline_end=data.timeline_end,
             tags=data.tags,
         )
+        logger.info(f"Created project: id={project.id}")
         return project
     except ValueError as e:
+        logger.warning(f"Failed to create project: {e}")
         raise HTTPException(status_code=409, detail=str(e))
 
 
