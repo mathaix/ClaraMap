@@ -226,6 +226,209 @@ Reference `SECURITY-GOVERNANCE.md` for full details.
   - LLM-as-judge for conversation quality
   - Regression gates for prompt changes
 
+## Git Workflow & Branch-Based Development
+
+### Branch Strategy
+
+**IMPORTANT**: All development MUST follow a branch-based workflow. Never commit directly to `main`.
+
+#### Branch Naming Convention
+
+Every story/task gets its own feature branch:
+
+```bash
+# Format: feature/{issue-number}-{brief-description}
+feature/3-create-discovery-project
+feature/9-design-assistant-conversation
+feature/18-blueprint-core-schema
+
+# For bug fixes
+fix/{issue-number}-{brief-description}
+
+# For documentation
+docs/{brief-description}
+```
+
+#### Development Workflow
+
+1. **Create Feature Branch**
+   ```bash
+   # Always branch from main
+   git checkout main
+   git pull origin main
+   git checkout -b feature/{issue-number}-{description}
+   ```
+
+2. **Make Commits During Development**
+   - Commit frequently (after each logical unit of work)
+   - Every commit should have a clear, descriptive message
+   - Reference the issue number in commits
+
+   ```bash
+   # Good commit messages
+   git commit -m "feat(projects): Add project creation endpoint (#3)"
+   git commit -m "test(projects): Add unit tests for project service (#3)"
+   git commit -m "docs(projects): Update API documentation (#3)"
+   ```
+
+3. **Commit Message Format**
+   ```
+   <type>(<scope>): <subject> (#issue)
+
+   Types:
+   - feat: New feature
+   - fix: Bug fix
+   - refactor: Code refactoring
+   - test: Adding tests
+   - docs: Documentation changes
+   - chore: Build/config changes
+   - style: Code style changes (formatting)
+
+   Examples:
+   feat(blueprint): Implement core schema models (#18)
+   test(blueprint): Add validation tests for AgentBlueprint (#19)
+   refactor(agents): Extract agent factory to separate module (#24)
+   fix(invitations): Handle duplicate email validation (#26)
+   ```
+
+4. **Push and Create Pull Request**
+   ```bash
+   # Push feature branch
+   git push -u origin feature/{issue-number}-{description}
+
+   # Create PR via GitHub CLI
+   gh pr create --title "feat: {Feature name} (#{issue})" \
+                --body "Closes #{issue-number}
+
+   ## Changes
+   - List of changes
+
+   ## Testing
+   - How to test
+
+   ## Checklist
+   - [ ] Tests passing
+   - [ ] Documentation updated
+   - [ ] Code reviewed"
+   ```
+
+5. **Merge and Cleanup**
+   ```bash
+   # After PR approved and merged
+   git checkout main
+   git pull origin main
+   git branch -d feature/{issue-number}-{description}
+   ```
+
+### Commit Guidelines
+
+**Commit Frequently**:
+- After implementing a function/class
+- After writing tests
+- After fixing a bug
+- After updating documentation
+- Before switching context
+
+**Atomic Commits**:
+- Each commit should be a single logical change
+- Should be independently reviewable
+- Should not break the build
+
+**Commit Message Quality**:
+- First line: Clear summary (50 chars max)
+- Reference issue number
+- Use imperative mood ("Add" not "Added")
+- Explain WHY, not just WHAT
+
+### Pull Request Requirements
+
+Every PR must:
+- [ ] Reference the GitHub issue (Closes #X)
+- [ ] Pass all tests (unit, integration, type checks, linting)
+- [ ] Include tests for new functionality
+- [ ] Update documentation if needed
+- [ ] Have a clear description of changes
+- [ ] Be reviewed by at least one team member
+- [ ] Have all CI checks passing
+
+### Working on Multiple Stories
+
+If working on multiple stories simultaneously:
+
+```bash
+# Switch between feature branches
+git checkout feature/3-create-project
+# ... make changes, commit ...
+
+git checkout feature/4-project-dashboard
+# ... make changes, commit ...
+
+# Always commit before switching branches
+git commit -m "WIP: Partial implementation"
+```
+
+### Integration with Main
+
+- **Never commit directly to main**
+- All changes go through pull requests
+- Main branch is always deployable
+- Protect main branch with required PR reviews
+- Enable branch protection rules on GitHub
+
+### Example Full Workflow
+
+```bash
+# Starting work on issue #18 (Blueprint Core Schema)
+git checkout main
+git pull origin main
+git checkout -b feature/18-blueprint-core-schema
+
+# Make changes, commit frequently
+git add src/backend/clara/models/blueprint.py
+git commit -m "feat(blueprint): Add InterviewBlueprint base model (#18)"
+
+git add src/backend/clara/models/project_context.py
+git commit -m "feat(blueprint): Add ProjectContext schema (#18)"
+
+git add tests/unit/test_blueprint_models.py
+git commit -m "test(blueprint): Add validation tests for blueprint models (#18)"
+
+# Run tests before pushing
+cd src/backend && uv run pytest
+uv run mypy clara
+uv run ruff check clara
+
+# Push and create PR
+git push -u origin feature/18-blueprint-core-schema
+gh pr create --title "feat: Blueprint Core Schema Definition (#18)" \
+             --body "Closes #18
+
+## Changes
+- Implemented InterviewBlueprint base model
+- Added ProjectContext schema with validation
+- Added comprehensive unit tests
+- All Pydantic models with strict validation
+
+## Testing
+- Unit tests: pytest tests/unit/test_blueprint_models.py
+- Type checking: mypy clara/models/
+- All tests passing ✓
+
+## Checklist
+- [x] Tests passing
+- [x] Type checks passing
+- [x] Documentation updated
+- [x] Ready for review"
+
+# After PR review and approval, merge via GitHub UI
+# Then cleanup locally
+git checkout main
+git pull origin main
+git branch -d feature/18-blueprint-core-schema
+```
+
+---
+
 ## Common Patterns
 
 ### Creating a New API Endpoint
