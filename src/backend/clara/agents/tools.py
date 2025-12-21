@@ -131,9 +131,10 @@ def create_clara_tools(session_id: str):
         }
         logger.info(f"[{session_id}] Project set: {args['name']}")
         return {
-            "success": True,
-            "project": state["project"],
-            "message": f"Project '{args['name']}' configured as {args['type']}",
+            "content": [{
+                "type": "text",
+                "text": f"Project '{args['name']}' configured as {args['type']}"
+            }]
         }
 
     @tool("entity", "Add an entity type to extract from interviews", EntitySchema)
@@ -156,12 +157,12 @@ def create_clara_tools(session_id: str):
             action = "added"
 
         logger.info(f"[{session_id}] Entity {action}: {args['name']}")
+        count = len(state["entities"])
         return {
-            "success": True,
-            "entity": entity,
-            "action": action,
-            "total_entities": len(state["entities"]),
-            "message": f"Entity '{args['name']}' {action}",
+            "content": [{
+                "type": "text",
+                "text": f"Entity '{args['name']}' {action}. Total entities: {count}"
+            }]
         }
 
     @tool("agent", "Configure an interview agent", AgentSchema)
@@ -185,12 +186,12 @@ def create_clara_tools(session_id: str):
             action = "added"
 
         logger.info(f"[{session_id}] Agent {action}: {args['name']}")
+        count = len(state["agents"])
         return {
-            "success": True,
-            "agent": agent,
-            "action": action,
-            "total_agents": len(state["agents"]),
-            "message": f"Interview agent '{args['name']}' {action}",
+            "content": [{
+                "type": "text",
+                "text": f"Interview agent '{args['name']}' {action}. Total agents: {count}"
+            }]
         }
 
     @tool("ask", "Present options to the user for selection", AskSchema)
@@ -200,13 +201,20 @@ def create_clara_tools(session_id: str):
         Note: The actual UI rendering happens on the frontend.
         This tool returns the options structure for the frontend to display.
         """
+        import json
         logger.info(f"[{session_id}] Asking user: {args['question']}")
-        return {
+        # Return structured data that frontend can interpret
+        options_json = json.dumps({
             "type": "user_input_required",
             "question": args["question"],
             "options": args["options"],
             "multi_select": args.get("multi_select", False),
-            "message": "Waiting for user selection...",
+        })
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"[UI_COMPONENT]{options_json}[/UI_COMPONENT]"
+            }]
         }
 
     @tool("phase", "Transition to a different design phase", PhaseSchema)
@@ -217,30 +225,37 @@ def create_clara_tools(session_id: str):
         state["phase"] = args["phase"]
         logger.info(f"[{session_id}] Phase: {old_phase} -> {args['phase']}")
         return {
-            "success": True,
-            "previous_phase": old_phase,
-            "current_phase": args["phase"],
-            "message": f"Transitioned from {old_phase} to {args['phase']}",
+            "content": [{
+                "type": "text",
+                "text": f"Transitioned from {old_phase} to {args['phase']}"
+            }]
         }
 
     @tool("preview", "Get a preview of the current blueprint", {"type": "object", "properties": {}})
     async def preview_tool(args: dict) -> dict[str, Any]:
         """Return the current blueprint state."""
+        import json
         state = get_session_state(session_id)
         logger.info(f"[{session_id}] Blueprint preview requested")
+        blueprint = {
+            "project": state["project"],
+            "entities": state["entities"],
+            "agents": state["agents"],
+            "phase": state["phase"],
+        }
+        summary_parts = []
+        if state["project"]:
+            summary_parts.append(f"Project: {state['project']['name']}")
+        summary_parts.append(f"Entities: {len(state['entities'])}")
+        summary_parts.append(f"Agents: {len(state['agents'])}")
+        summary_parts.append(f"Phase: {state['phase']}")
+        blueprint_json = json.dumps(blueprint, indent=2)
+        summary = ", ".join(summary_parts)
         return {
-            "blueprint": {
-                "project": state["project"],
-                "entities": state["entities"],
-                "agents": state["agents"],
-                "phase": state["phase"],
-            },
-            "summary": {
-                "has_project": state["project"] is not None,
-                "entity_count": len(state["entities"]),
-                "agent_count": len(state["agents"]),
-                "phase": state["phase"],
-            },
+            "content": [{
+                "type": "text",
+                "text": f"Blueprint Preview:\n{blueprint_json}\n\nSummary: {summary}"
+            }]
         }
 
     # Create the MCP server with all tools

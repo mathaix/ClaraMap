@@ -121,21 +121,36 @@ class DesignAssistantSession:
 
     def _create_hooks(self) -> dict:
         """Create hooks for tracking agent activity."""
-        async def pre_tool_hook(tool_name: str, tool_input: dict) -> None:
+        response_queue = self._response_queue
+
+        async def pre_tool_hook(
+            input_data: dict[str, Any],
+            tool_use_id: str | None,
+            context: Any
+        ) -> dict[str, Any]:
             """Track tool usage before execution."""
+            tool_name = input_data.get("tool_name", "unknown")
+            tool_input = input_data.get("tool_input", {})
             logger.debug(f"[PreToolUse] {tool_name}: {tool_input}")
-            await self._response_queue.put(AGUIEvent(
+            await response_queue.put(AGUIEvent(
                 type="TOOL_CALL_START",
                 data={"tool": tool_name, "input": tool_input}
             ))
+            return {}  # No modifications to tool behavior
 
-        async def post_tool_hook(tool_name: str, tool_result: Any) -> None:
+        async def post_tool_hook(
+            input_data: dict[str, Any],
+            tool_use_id: str | None,
+            context: Any
+        ) -> dict[str, Any]:
             """Track tool completion."""
+            tool_name = input_data.get("tool_name", "unknown")
             logger.debug(f"[PostToolUse] {tool_name} completed")
-            await self._response_queue.put(AGUIEvent(
+            await response_queue.put(AGUIEvent(
                 type="TOOL_CALL_END",
                 data={"tool": tool_name}
             ))
+            return {}
 
         return {
             'PreToolUse': [
