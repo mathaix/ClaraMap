@@ -403,6 +403,9 @@ class DesignAssistantManager:
 
     def __init__(self):
         self._sessions: dict[str, DesignAssistantSession] = {}
+        # Import here to avoid circular imports
+        from clara.db.session import async_session_maker
+        self._db_session_maker = async_session_maker
 
     async def get_or_create_session(
         self,
@@ -415,6 +418,69 @@ class DesignAssistantManager:
             await session.start()
             self._sessions[session_id] = session
         return self._sessions[session_id]
+
+    async def restore_session(
+        self,
+        session_id: str,
+        project_id: str,
+        db_session: Any  # DesignSession model instance
+    ) -> DesignAssistantSession:
+        """Restore a session from database state.
+
+        This creates a new in-memory session and populates it with
+        the state from the database record.
+        """
+        from clara.agents.tools import get_session_state
+
+        # If session already exists in memory, return it
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+
+        # Create new in-memory session
+        session = DesignAssistantSession(session_id, project_id)
+        await session.start()
+
+        # Restore state from DB
+        if db_session.phase:
+            session.state.phase = DesignPhase(db_session.phase)
+        session.state.turn_count = db_session.turn_count or 0
+        session.state.message_count = db_session.message_count or 0
+
+        # Restore blueprint preview state
+        blueprint_state = db_session.blueprint_state or {}
+        if blueprint_state.get("project"):
+            project = blueprint_state["project"]
+            session.state.blueprint_preview.project_name = project.get("name")
+            session.state.blueprint_preview.project_type = project.get("type")
+        session.state.blueprint_preview.entity_types = [
+            e.get("name") for e in blueprint_state.get("entities", [])
+        ]
+        session.state.blueprint_preview.agent_count = len(blueprint_state.get("agents", []))
+
+        # Restore goal summary
+        if db_session.goal_summary:
+            session.state.goal_summary = db_session.goal_summary.get("goal_text")
+
+        # Restore agent capabilities
+        if db_session.agent_capabilities:
+            caps = db_session.agent_capabilities
+            session.state.agent_capabilities.role = caps.get("role")
+            session.state.agent_capabilities.capabilities = caps.get("capabilities", [])
+            session.state.agent_capabilities.expertise_areas = caps.get("expertise_areas", [])
+            session.state.agent_capabilities.interaction_style = caps.get("interaction_style")
+
+        # Restore tools state
+        tool_state = get_session_state(session_id)
+        tool_state["project"] = blueprint_state.get("project")
+        tool_state["entities"] = blueprint_state.get("entities", [])
+        tool_state["agents"] = blueprint_state.get("agents", [])
+        tool_state["phase"] = db_session.phase
+        tool_state["goal_summary"] = db_session.goal_summary
+        tool_state["agent_capabilities"] = db_session.agent_capabilities
+
+        self._sessions[session_id] = session
+        logger.info(f"Restored session {session_id} from database (phase: {db_session.phase})")
+        return session
 
     async def get_session(self, session_id: str) -> DesignAssistantSession | None:
         """Get an existing session."""

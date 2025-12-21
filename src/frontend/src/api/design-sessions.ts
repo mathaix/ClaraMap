@@ -7,6 +7,7 @@ import type {
   CreateSessionRequest,
   CreateSessionResponse,
   SessionInfo,
+  SessionStateResponse,
   AGUIEvent,
 } from '../types/design-session';
 
@@ -25,10 +26,17 @@ export async function createSession(
 }
 
 /**
- * Get session info.
+ * Get session info (basic).
  */
 export async function getSession(sessionId: string): Promise<SessionInfo> {
   return apiRequest<SessionInfo>(`${BASE_URL}/${sessionId}`);
+}
+
+/**
+ * Get full session state including messages and blueprint state.
+ */
+export async function getFullSession(sessionId: string): Promise<SessionStateResponse> {
+  return apiRequest<SessionStateResponse>(`${BASE_URL}/${sessionId}`);
 }
 
 /**
@@ -129,6 +137,7 @@ export async function* streamMessage(
 export const designSessionsApi = {
   create: createSession,
   get: getSession,
+  getFullSession,
   delete: deleteSession,
   streamMessage,
 };

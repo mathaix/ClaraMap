@@ -85,6 +85,7 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   session_id: string;
   project_id: string;
+  is_new: boolean;  // True if new session, False if resuming existing
 }
 
 export interface SessionInfo {
@@ -93,6 +94,43 @@ export interface SessionInfo {
   phase: DesignPhase;
   turn_count: number;
   message_count: number;
+}
+
+// Full session state returned by GET /design-sessions/{id}
+export interface SessionStateResponse {
+  session_id: string;
+  project_id: string;
+  phase: DesignPhase;
+  messages: Array<{ role: MessageRole; content: string }>;
+  blueprint_state: {
+    project?: {
+      name?: string;
+      type?: string;
+      domain?: string;
+      description?: string;
+    } | null;
+    entities: Array<{
+      name: string;
+      attributes: string[];
+      description?: string;
+    }>;
+    agents: Array<{
+      name: string;
+      persona?: string;
+      topics: string[];
+      tone?: string;
+    }>;
+  };
+  goal_summary: Record<string, unknown> | null;
+  agent_capabilities: {
+    role?: string;
+    capabilities?: string[];
+    expertise_areas?: string[];
+    interaction_style?: string;
+  } | null;
+  turn_count: number;
+  message_count: number;
+  status: string;
 }
 
 export interface SendMessageRequest {

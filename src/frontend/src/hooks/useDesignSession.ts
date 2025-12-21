@@ -13,6 +13,7 @@ import type {
   ErrorEvent,
   DesignPhase,
   BlueprintPreview,
+  SessionStateResponse,
 } from '../types/design-session';
 
 interface UseDesignSessionOptions {
@@ -77,6 +78,52 @@ export function useDesignSession({
     return `msg-${Date.now()}-${messageIdCounter.current}`;
   }, []);
 
+  // Convert API message to ChatMessage
+  const apiMessageToChatMessage = useCallback(
+    (msg: { role: 'user' | 'assistant'; content: string }, index: number): ChatMessage => ({
+      id: `restored-${index}`,
+      role: msg.role,
+      content: msg.content,
+      timestamp: new Date(), // We don't have timestamps from the API
+    }),
+    []
+  );
+
+  // Restore session state from API response
+  const restoreSessionState = useCallback(
+    (sessionState: SessionStateResponse) => {
+      // Restore messages
+      const restoredMessages = sessionState.messages.map(apiMessageToChatMessage);
+      setMessages(restoredMessages);
+      messageIdCounter.current = restoredMessages.length;
+
+      // Restore session state
+      const blueprintState = sessionState.blueprint_state || {};
+      const project = blueprintState.project;
+
+      setSessionState({
+        phase: sessionState.phase,
+        preview: {
+          project_name: project?.name || null,
+          project_type: project?.type || null,
+          entity_types: blueprintState.entities?.map((e) => e.name) || [],
+          agent_count: blueprintState.agents?.length || 0,
+          topics: [],
+        },
+        inferred_domain: project?.domain || null,
+        debug: {
+          thinking: null,
+          approach: null,
+          turn_count: sessionState.turn_count,
+          message_count: sessionState.message_count,
+          domain_confidence: 0,
+          discussed_topics: [],
+        },
+      });
+    },
+    [apiMessageToChatMessage]
+  );
+
   const connect = useCallback(async () => {
     if (isConnected) return;
 
@@ -87,14 +134,23 @@ export function useDesignSession({
       const response = await designSessionsApi.create({ project_id: projectId });
       setSessionId(response.session_id);
       setIsConnected(true);
-      setSessionState(initialSessionState);
+
+      if (response.is_new) {
+        // New session - start fresh
+        setSessionState(initialSessionState);
+        setMessages([]);
+      } else {
+        // Existing session - load previous state
+        const fullState = await designSessionsApi.getFullSession(response.session_id);
+        restoreSessionState(fullState);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect');
       throw err;
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, isConnected]);
+  }, [projectId, isConnected, restoreSessionState]);
 
   const disconnect = useCallback(async () => {
     if (!sessionId) return;
