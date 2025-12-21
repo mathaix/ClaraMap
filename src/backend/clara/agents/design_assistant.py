@@ -14,6 +14,8 @@ from typing import Any
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
+from clara.agents.tools import CLARA_TOOL_NAMES, clear_session_state, create_clara_tools
+
 logger = logging.getLogger(__name__)
 
 # Paths to prompt files
@@ -159,25 +161,31 @@ class DesignAssistantSession:
         agents = self._create_subagents()
         hooks = self._create_hooks()
 
+        # Create MCP server with custom tools bound to this session
+        clara_mcp_server = create_clara_tools(self.session_id)
+
         options = ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             system_prompt=architect_prompt,
-            allowed_tools=["Task"],  # Only allow Task tool for subagent delegation
+            allowed_tools=["Task"] + CLARA_TOOL_NAMES,  # Task for subagents + custom tools
             agents=agents,
             hooks=hooks,
+            mcp_servers={"clara": clara_mcp_server},  # Register our custom MCP server
             model="sonnet"
         )
 
         self.client = ClaudeSDKClient(options=options)
         await self.client.__aenter__()
         self._running = True
-        logger.info(f"Design session {self.session_id} started")
+        logger.info(f"Design session {self.session_id} started with Clara tools")
 
     async def stop(self) -> None:
         """Stop the design assistant session."""
         if self.client and self._running:
             await self.client.__aexit__(None, None, None)
             self._running = False
+            # Clean up in-memory tool state
+            clear_session_state(self.session_id)
             logger.info(f"Design session {self.session_id} stopped")
 
     async def send_message(self, message: str) -> AsyncIterator[AGUIEvent]:
