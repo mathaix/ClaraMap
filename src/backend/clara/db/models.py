@@ -150,6 +150,37 @@ class Interviewee(Base):
     )
 
 
+class DesignPhase(str, Enum):
+    """Design session phases."""
+    GOAL_UNDERSTANDING = "goal_understanding"
+    AGENT_CONFIGURATION = "agent_configuration"
+    BLUEPRINT_DESIGN = "blueprint_design"
+    COMPLETE = "complete"
+
+
+class DesignSessionPrompt(Base):
+    """Hydrated prompt for a design session phase."""
+
+    __tablename__ = "design_session_prompts"
+    __table_args__ = (
+        Index("ix_design_session_prompts_session_phase", "session_id", "phase"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    phase: Mapped[str] = mapped_column(String(30), nullable=False)
+    template_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    hydrated_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    context_data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class InterviewSession(Base):
     """Interview Session - pairs an Agent with an Interviewee for a Project."""
 

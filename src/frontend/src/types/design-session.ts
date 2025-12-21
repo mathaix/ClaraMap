@@ -1,0 +1,155 @@
+/**
+ * Design Session types for the Design Assistant UI.
+ */
+
+// AG-UI Event Types
+export type AGUIEventType =
+  | 'STATE_SNAPSHOT'
+  | 'STATE_DELTA'
+  | 'TEXT_MESSAGE_CONTENT'
+  | 'TEXT_MESSAGE_END'
+  | 'TOOL_CALL_START'
+  | 'TOOL_CALL_END'
+  | 'ERROR';
+
+export interface AGUIEvent {
+  type: AGUIEventType;
+  [key: string]: unknown;
+}
+
+export interface StateSnapshotEvent extends AGUIEvent {
+  type: 'STATE_SNAPSHOT';
+  phase: DesignPhase;
+  preview: BlueprintPreview;
+  inferred_domain: string | null;
+  debug: DebugInfo;
+}
+
+export interface TextMessageContentEvent extends AGUIEvent {
+  type: 'TEXT_MESSAGE_CONTENT';
+  delta: string;
+}
+
+export interface TextMessageEndEvent extends AGUIEvent {
+  type: 'TEXT_MESSAGE_END';
+}
+
+export interface ToolCallStartEvent extends AGUIEvent {
+  type: 'TOOL_CALL_START';
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolCallEndEvent extends AGUIEvent {
+  type: 'TOOL_CALL_END';
+  tool?: string;
+}
+
+export interface ErrorEvent extends AGUIEvent {
+  type: 'ERROR';
+  message: string;
+}
+
+// Design Session State
+export type DesignPhase = 'goal_understanding' | 'agent_configuration' | 'blueprint_design' | 'complete';
+
+export interface BlueprintPreview {
+  project_name: string | null;
+  project_type: string | null;
+  entity_types: string[];
+  agent_count: number;
+  topics: string[];
+}
+
+export interface DebugInfo {
+  thinking: string | null;
+  approach: string | null;
+  turn_count: number;
+  message_count: number;
+  domain_confidence: number;
+  discussed_topics: string[];
+}
+
+export interface DesignSessionState {
+  phase: DesignPhase;
+  preview: BlueprintPreview;
+  inferred_domain: string | null;
+  debug: DebugInfo;
+}
+
+// API Types
+export interface CreateSessionRequest {
+  project_id: string;
+}
+
+export interface CreateSessionResponse {
+  session_id: string;
+  project_id: string;
+}
+
+export interface SessionInfo {
+  session_id: string;
+  project_id: string;
+  phase: DesignPhase;
+  turn_count: number;
+  message_count: number;
+}
+
+export interface SendMessageRequest {
+  message: string;
+}
+
+// Chat Message Types
+export type MessageRole = 'user' | 'assistant';
+
+export interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  content: string;
+  timestamp: Date;
+  isStreaming?: boolean;
+}
+
+// Interactive UI Component Types (from ask tool)
+export interface AskOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface AskUIComponent {
+  type: 'user_input_required';
+  question: string;
+  options: AskOption[];
+  multi_select: boolean;
+}
+
+// Agent configured UI Component (from agent_summary tool)
+export interface AgentConfiguredUIComponent {
+  type: 'agent_configured';
+  role: string;
+  expertise_areas: string[];
+  interaction_style: string;
+  capabilities?: string[];
+  focus_areas?: string[];
+}
+
+// Union type for all UI components
+export type UIComponent = AskUIComponent | AgentConfiguredUIComponent;
+
+// Parse UI component from message content
+export function parseUIComponent(content: string): UIComponent | null {
+  const match = content.match(/\[UI_COMPONENT\](.*?)\[\/UI_COMPONENT\]/s);
+  if (!match) return null;
+
+  try {
+    return JSON.parse(match[1]) as UIComponent;
+  } catch {
+    return null;
+  }
+}
+
+// Strip UI component markers from content
+export function stripUIComponentMarkers(content: string): string {
+  return content.replace(/\[UI_COMPONENT\].*?\[\/UI_COMPONENT\]/gs, '').trim();
+}

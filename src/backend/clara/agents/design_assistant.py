@@ -31,10 +31,9 @@ def load_prompt(filename: str) -> str:
 
 class DesignPhase(str, Enum):
     """Phases of the blueprint design process."""
-    DISCOVERY = "discovery"
-    RUBRIC = "rubric"
-    AGENTS = "agents"
-    REVIEW = "review"
+    GOAL_UNDERSTANDING = "goal_understanding"
+    AGENT_CONFIGURATION = "agent_configuration"
+    BLUEPRINT_DESIGN = "blueprint_design"
     COMPLETE = "complete"
 
 
@@ -49,12 +48,24 @@ class BlueprintPreview:
 
 
 @dataclass
+class AgentCapabilities:
+    """Configured specialist agent capabilities from Phase 2."""
+    role: str | None = None
+    capabilities: list[str] = field(default_factory=list)
+    expertise_areas: list[str] = field(default_factory=list)
+    interaction_style: str | None = None
+    focus_areas: list[str] = field(default_factory=list)
+
+
+@dataclass
 class DesignSessionState:
     """State for a design assistant session."""
     session_id: str
     project_id: str
-    phase: DesignPhase = DesignPhase.DISCOVERY
+    phase: DesignPhase = DesignPhase.GOAL_UNDERSTANDING
     blueprint_preview: BlueprintPreview = field(default_factory=BlueprintPreview)
+    agent_capabilities: AgentCapabilities = field(default_factory=AgentCapabilities)
+    goal_summary: str | None = None
     inferred_domain: str | None = None
     domain_confidence: float = 0.0
     turn_count: int = 0
@@ -85,37 +96,53 @@ class DesignAssistantSession:
         self._running = False
 
     def _create_subagents(self) -> dict[str, AgentDefinition]:
-        """Define specialized subagents."""
+        """Define phase-based subagents.
+
+        Each subagent should call mcp__clara__get_prompt at the start to get
+        its hydrated instructions based on the current session state.
+        """
+        # Base instruction for subagents to fetch their hydrated prompt
+        get_prompt_instruction = (
+            "IMPORTANT: First call mcp__clara__get_prompt with your phase to get your full instructions. "
+            "Execute based on those instructions.\n\n"
+        )
+
         return {
-            "domain-expert": AgentDefinition(
+            "phase1-goal-discovery": AgentDefinition(
                 description=(
-                    "Analyzes the project domain and suggests interview structures. "
-                    "Use this agent when you need to understand the domain context, "
-                    "identify relevant interview topics, or get domain-specific recommendations."
+                    "Handles Phase 1: Goal Understanding. "
+                    "Use this agent to discover the user's project through natural conversation. "
+                    "It will explore the 5 key dimensions and use mcp__clara__ask for structured choices. "
+                    "After completing, call mcp__clara__hydrate_phase2 with the goal summary."
                 ),
-                tools=[],  # No tools needed, just analysis
-                prompt=load_prompt("domain_expert.txt"),
-                model="haiku"
+                tools=["mcp__clara__ask", "mcp__clara__project", "mcp__clara__save_goal_summary",
+                       "mcp__clara__hydrate_phase2", "mcp__clara__get_prompt"],
+                prompt=get_prompt_instruction + load_prompt("phase1_goal_understanding.txt"),
+                model="sonnet"
             ),
-            "rubric-designer": AgentDefinition(
+            "phase2-agent-config": AgentDefinition(
                 description=(
-                    "Creates entity extraction schemas and rubrics. "
-                    "Use this agent when you need to define what entities to extract, "
-                    "their attributes, and relationships."
+                    "Handles Phase 2: Agent Configuration. "
+                    "Use this agent to analyze the goal and configure a specialized interview agent. "
+                    "It will call mcp__clara__agent_summary to display the specialist card. "
+                    "After completing, call mcp__clara__hydrate_phase3 with the agent config."
                 ),
-                tools=[],
-                prompt=load_prompt("rubric_designer.txt"),
-                model="haiku"
+                tools=["mcp__clara__agent_summary", "mcp__clara__phase", "mcp__clara__get_prompt",
+                       "mcp__clara__hydrate_phase3"],
+                prompt=get_prompt_instruction + load_prompt("phase2_agent_configuration.txt"),
+                model="sonnet"
             ),
-            "agent-configurator": AgentDefinition(
+            "phase3-blueprint-design": AgentDefinition(
                 description=(
-                    "Designs interview agent personas and behaviors. "
-                    "Use this agent when you need to configure interview agents, "
-                    "their personas, goals, and adaptive behaviors."
+                    "Handles Phase 3: Blueprint Design. "
+                    "Use this agent to design the complete interview blueprint. "
+                    "It will use Mode 1 (Clarification) or Mode 2 (Blueprint Design) based on goal clarity."
                 ),
-                tools=[],
-                prompt=load_prompt("agent_configurator.txt"),
-                model="haiku"
+                tools=["mcp__clara__project", "mcp__clara__entity", "mcp__clara__agent",
+                       "mcp__clara__ask", "mcp__clara__preview", "mcp__clara__phase",
+                       "mcp__clara__get_prompt"],
+                prompt=get_prompt_instruction + load_prompt("phase3_blueprint_design.txt"),
+                model="sonnet"
             ),
         }
 
@@ -129,13 +156,51 @@ class DesignAssistantSession:
             context: Any
         ) -> dict[str, Any]:
             """Track tool usage before execution."""
-            tool_name = input_data.get("tool_name", "unknown")
-            tool_input = input_data.get("tool_input", {})
-            logger.debug(f"[PreToolUse] {tool_name}: {tool_input}")
+            import json
+            # Log full input_data to understand structure
+            logger.info(f"[PreToolUse] input_data keys: {list(input_data.keys())}")
+            logger.info(f"[PreToolUse] full input_data: {input_data}")
+            tool_name = input_data.get("tool_name", input_data.get("name", "unknown"))
+            tool_input = input_data.get("tool_input", input_data.get("input", {}))
+            logger.info(f"[PreToolUse] {tool_name}: {tool_input}")
             await response_queue.put(AGUIEvent(
                 type="TOOL_CALL_START",
                 data={"tool": tool_name, "input": tool_input}
             ))
+
+            # Special handling for ask tool - emit UI component directly
+            if tool_name == "mcp__clara__ask":
+                ui_component = {
+                    "type": "user_input_required",
+                    "question": tool_input.get("question", ""),
+                    "options": tool_input.get("options", []),
+                    "multi_select": tool_input.get("multi_select", False),
+                }
+                ui_json = json.dumps(ui_component)
+                # Emit as text content with UI_COMPONENT markers
+                await response_queue.put(AGUIEvent(
+                    type="TEXT_MESSAGE_CONTENT",
+                    data={"delta": f"\n\n[UI_COMPONENT]{ui_json}[/UI_COMPONENT]"}
+                ))
+                logger.info(f"[{self.session_id}] Emitted UI component for ask tool")
+
+            # Special handling for agent_summary tool - emit specialist agent card
+            if tool_name == "mcp__clara__agent_summary":
+                ui_component = {
+                    "type": "agent_configured",
+                    "role": tool_input.get("role", ""),
+                    "expertise_areas": tool_input.get("expertise_areas", []),
+                    "interaction_style": tool_input.get("interaction_style", ""),
+                    "capabilities": tool_input.get("capabilities", []),
+                    "focus_areas": tool_input.get("focus_areas", []),
+                }
+                ui_json = json.dumps(ui_component)
+                await response_queue.put(AGUIEvent(
+                    type="TEXT_MESSAGE_CONTENT",
+                    data={"delta": f"\n\n[UI_COMPONENT]{ui_json}[/UI_COMPONENT]"}
+                ))
+                logger.info(f"[{self.session_id}] Emitted UI component for agent_summary tool")
+
             return {}  # No modifications to tool behavior
 
         async def post_tool_hook(
@@ -238,10 +303,25 @@ class DesignAssistantSession:
         # Send message to agent
         await self.client.query(prompt=message)
 
+        # Helper to drain queued events from hooks
+        async def drain_queue():
+            """Yield any events queued by hooks."""
+            while not self._response_queue.empty():
+                try:
+                    event = self._response_queue.get_nowait()
+                    yield event
+                except asyncio.QueueEmpty:
+                    break
+
         # Stream response
         current_text = ""
         async for msg in self.client.receive_response():
+            # First, drain any events queued by hooks
+            async for event in drain_queue():
+                yield event
+
             msg_type = type(msg).__name__
+            logger.debug(f"[{self.session_id}] Message type: {msg_type}, attrs: {dir(msg)}")
 
             if msg_type == 'AssistantMessage':
                 # Extract text content from the message
@@ -267,11 +347,49 @@ class DesignAssistantSession:
                     )
 
             elif msg_type == 'ToolResultMessage':
-                # Tool completed
+                # Tool completed - extract and stream any text content
+                tool_text = ""
+                logger.info(f"[{self.session_id}] ToolResultMessage: {msg}")
+                if hasattr(msg, 'content'):
+                    # Content can be a list of blocks or a string
+                    content = msg.content
+                    logger.info(f"[{self.session_id}] Tool content type: {type(content)}, value: {content}")
+                    if isinstance(content, list):
+                        for block in content:
+                            if hasattr(block, 'text'):
+                                tool_text += block.text
+                            elif isinstance(block, dict) and 'text' in block:
+                                tool_text += block['text']
+                    elif isinstance(content, str):
+                        tool_text = content
+                # Also check for 'result' attribute
+                elif hasattr(msg, 'result'):
+                    result = msg.result
+                    logger.info(f"[{self.session_id}] Tool result type: {type(result)}, value: {result}")
+                    if isinstance(result, str):
+                        tool_text = result
+                    elif isinstance(result, dict) and 'content' in result:
+                        for block in result['content']:
+                            if isinstance(block, dict) and 'text' in block:
+                                tool_text += block['text']
+
+                logger.info(f"[{self.session_id}] Extracted tool_text: {tool_text[:200] if tool_text else 'empty'}")
+
+                # If tool result contains UI_COMPONENT, stream it
+                if tool_text and '[UI_COMPONENT]' in tool_text:
+                    yield AGUIEvent(
+                        type="TEXT_MESSAGE_CONTENT",
+                        data={"delta": tool_text}
+                    )
+
                 yield AGUIEvent(
                     type="TOOL_CALL_END",
                     data={}
                 )
+
+        # Final drain of any remaining queued events
+        async for event in drain_queue():
+            yield event
 
         # Emit end of message
         yield AGUIEvent(
