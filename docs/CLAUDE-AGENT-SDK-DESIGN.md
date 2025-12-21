@@ -378,7 +378,7 @@ ClaraMap/
 │   │   │   │   ├── ui-tools.ts          # UI component triggers
 │   │   │   │   └── validation-tools.ts
 │   │   │   └── prompts/
-│   │   │       ├── architect.txt
+│   │   │       ├── interview_orchestrator.txt
 │   │   │       ├── domain-expert.txt
 │   │   │       └── ...
 │   │   ├── protocol/

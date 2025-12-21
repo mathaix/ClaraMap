@@ -237,7 +237,7 @@ class DesignAssistantSession:
         if self._running:
             return
 
-        architect_prompt = load_prompt("architect.txt")
+        orchestrator_prompt = load_prompt("interview_orchestrator.txt")
         agents = self._create_subagents()
         hooks = self._create_hooks()
 
@@ -246,7 +246,7 @@ class DesignAssistantSession:
 
         options = ClaudeAgentOptions(
             permission_mode="bypassPermissions",
-            system_prompt=architect_prompt,
+            system_prompt=orchestrator_prompt,
             allowed_tools=["Task"] + CLARA_TOOL_NAMES,  # Task for subagents + custom tools
             agents=agents,
             hooks=hooks,
