@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from clara.agents.design_assistant import session_manager
 from clara.api.design_sessions import router as design_sessions_router
 from clara.api.projects import router as projects_router
+from clara.api.simulation_sessions import router as simulation_sessions_router
 from clara.config import settings
 from clara.db import Base, engine
 
@@ -63,6 +64,7 @@ async def log_requests(request: Request, call_next):
 # Include routers
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(design_sessions_router, prefix="/api/v1")
+app.include_router(simulation_sessions_router, prefix="/api/v1")
 
 
 @app.get("/health")

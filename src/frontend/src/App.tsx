@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import ProjectsPage from './pages/ProjectsPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
 import { DesignAssistantPage } from './pages/DesignAssistantPage'
+import { SimulationPage } from './pages/SimulationPage'
 
 function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -20,13 +21,14 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 
 function App() {
   const location = useLocation()
-  const isDesignAssistant = location.pathname.includes('/design')
+  const isFullScreenPage = location.pathname.includes('/design') || location.pathname.includes('/simulate')
 
-  // Design Assistant uses full-screen layout
-  if (isDesignAssistant) {
+  // Design Assistant and Simulation use full-screen layout
+  if (isFullScreenPage) {
     return (
       <Routes>
         <Route path="/projects/:projectId/design" element={<DesignAssistantPage />} />
+        <Route path="/projects/:projectId/simulate" element={<SimulationPage />} />
       </Routes>
     )
   }
