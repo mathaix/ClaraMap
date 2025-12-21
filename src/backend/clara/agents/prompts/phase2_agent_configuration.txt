@@ -72,15 +72,22 @@ Here is an example of the expected output structure (this is just a template sho
 }
 ```
 
-## Stage 4: Final JSON Output
+## Stage 4: Final JSON and Tool Calls
 
-After validating your draft, provide your final JSON definition in <json_output> tags outside of your thinking block. This should be your polished, validated JSON that is ready for direct use. Ensure it is:
-- Syntactically valid and properly formatted
-- Comprehensive and complete based on your analysis
-- Customized specifically for the given project goal
-- Ready to be parsed and used by another system without modification
+After validating your draft, you will:
 
-Your final output should consist only of the JSON definition in <json_output> tags and should not duplicate or rehash any of the thinking, analysis, or draft work you did earlier.
+1. **Output the JSON definition** in <json_output> tags. This should be your polished, validated JSON that is ready for direct use. Ensure it is:
+   - Syntactically valid and properly formatted
+   - Comprehensive and complete based on your analysis
+   - Customized specifically for the given project goal
+
+2. **Save the agent configuration** using `mcp__clara__agent_summary` with the JSON fields to store the configuration
+
+3. **Hydrate Phase 3** using `mcp__clara__hydrate_phase3` with the goal and agent configuration
+
+4. **Present a brief transition message** and **transition to Phase 3** using `mcp__clara__phase` with phase="blueprint_design"
+
+Do NOT output only JSON - you must also call the tools as described.
 
 ---
 
@@ -126,30 +133,10 @@ Primary topics this agent will explore. Examples:
 
 ---
 
-## After Creating the Definition
-
-1. Use `mcp__clara__agent_summary` to show the user what specialist agent you've configured
-2. Transition to Phase 3 (blueprint_design) using `mcp__clara__phase`
-
 ## User-Facing Message
 
-After generating the agent definition, present it to the user like this:
+After saving the agent configuration, present a brief transition message like:
 
----
-
-Based on your project goals, I've configured a specialist agent to assist with your interview blueprint:
-
-**[Agent Role]**
-
-**Expertise Areas:**
-- [Area 1]
-- [Area 2]
-- [Area 3]
-
-**Interaction Style:** [Brief description]
-
-I'll now use this specialized configuration to design your interview blueprint.
-
----
+> "I've configured a **[Agent Role]** to guide the blueprint design. Now let's design your interview blueprint together."
 
 Then immediately proceed to Phase 3.

@@ -14,6 +14,10 @@ import type {
   DesignPhase,
   BlueprintPreview,
   SessionStateResponse,
+  DebugEvent,
+  ToolCallStartEvent,
+  CustomEvent,
+  UIComponent,
 } from '../types/design-session';
 
 interface UseDesignSessionOptions {
@@ -32,14 +36,22 @@ interface UseDesignSessionReturn {
   messages: ChatMessage[];
   sessionState: DesignSessionState | null;
 
+  // UI component from CUSTOM events
+  pendingUIComponent: UIComponent | null;
+
+  // Debug state
+  debugEvents: DebugEvent[];
+
   // Actions
   connect: () => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  clearDebugEvents: () => void;
+  clearPendingUIComponent: () => void;
 }
 
 const initialSessionState: DesignSessionState = {
-  phase: 'discovery' as DesignPhase,
+  phase: 'goal_understanding' as DesignPhase,
   preview: {
     project_name: null,
     project_type: null,
@@ -70,8 +82,35 @@ export function useDesignSession({
   const [sessionState, setSessionState] = useState<DesignSessionState | null>(
     null
   );
+  const [pendingUIComponent, setPendingUIComponent] = useState<UIComponent | null>(null);
+  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
 
   const messageIdCounter = useRef(0);
+  const debugEventIdCounter = useRef(0);
+
+  const addDebugEvent = useCallback(
+    (type: DebugEvent['type'], title: string, details: Record<string, unknown> = {}) => {
+      debugEventIdCounter.current += 1;
+      const event: DebugEvent = {
+        id: `debug-${Date.now()}-${debugEventIdCounter.current}`,
+        timestamp: new Date(),
+        type,
+        title,
+        details,
+      };
+      setDebugEvents((prev) => [...prev, event]);
+    },
+    []
+  );
+
+  const clearDebugEvents = useCallback(() => {
+    setDebugEvents([]);
+    debugEventIdCounter.current = 0;
+  }, []);
+
+  const clearPendingUIComponent = useCallback(() => {
+    setPendingUIComponent(null);
+  }, []);
 
   const generateMessageId = useCallback(() => {
     messageIdCounter.current += 1;
@@ -168,10 +207,26 @@ export function useDesignSession({
   }, [sessionId]);
 
   const handleEvent = useCallback(
-    (event: AGUIEvent, currentAssistantMessage: ChatMessage | null) => {
+    (event: AGUIEvent, currentAssistantMessage: ChatMessage | null, prevPhase: DesignPhase | null) => {
       switch (event.type) {
         case 'STATE_SNAPSHOT': {
           const snapshot = event as StateSnapshotEvent;
+
+          // Track phase transitions
+          if (prevPhase && snapshot.phase !== prevPhase) {
+            addDebugEvent('phase_transition', `${prevPhase} → ${snapshot.phase}`, {
+              from: prevPhase,
+              to: snapshot.phase,
+            });
+          }
+
+          // Track state updates
+          addDebugEvent('state_update', `State snapshot received`, {
+            phase: snapshot.phase,
+            turn_count: snapshot.debug?.turn_count,
+            message_count: snapshot.debug?.message_count,
+          });
+
           setSessionState({
             phase: snapshot.phase,
             preview: snapshot.preview as BlueprintPreview,
@@ -209,24 +264,55 @@ export function useDesignSession({
         }
 
         case 'TOOL_CALL_START': {
-          // Could show tool activity indicator
-          console.log('Tool call started:', event);
+          const toolEvent = event as ToolCallStartEvent;
+          const toolName = toolEvent.tool || 'unknown';
+
+          // Determine event type based on tool name
+          let eventType: DebugEvent['type'] = 'tool_call';
+          let title = toolName;
+
+          if (toolName.includes('hydrate')) {
+            eventType = 'hydration';
+            title = toolName.replace('mcp__clara__', '');
+          } else if (toolName.includes('phase')) {
+            eventType = 'phase_transition';
+            title = `Phase tool: ${JSON.stringify(toolEvent.input)}`;
+          } else {
+            title = toolName.replace('mcp__clara__', '');
+          }
+
+          addDebugEvent(eventType, title, toolEvent.input || {});
           break;
         }
 
         case 'TOOL_CALL_END': {
-          // Could hide tool activity indicator
-          console.log('Tool call ended:', event);
+          // Tool completion is tracked implicitly
+          break;
+        }
+
+        case 'CUSTOM': {
+          // Handle CUSTOM AG-UI events for Clara UI components
+          const customEvent = event as CustomEvent;
+          const eventName = customEvent.name;
+          const value = customEvent.value;
+
+          // Log as debug event
+          addDebugEvent('tool_call', `UI: ${eventName}`, { component: value });
+
+          // Set the pending UI component for rendering
+          setPendingUIComponent(value);
           break;
         }
 
         case 'ERROR': {
-          setError((event as ErrorEvent).message);
+          const errorEvent = event as ErrorEvent;
+          addDebugEvent('error', errorEvent.message, { error: errorEvent.message });
+          setError(errorEvent.message);
           break;
         }
       }
     },
-    []
+    [addDebugEvent]
   );
 
   const sendMessage = useCallback(
@@ -257,9 +343,10 @@ export function useDesignSession({
 
       try {
         const stream = designSessionsApi.streamMessage(sessionId, message);
+        const prevPhase = sessionState?.phase || null;
 
         for await (const event of stream) {
-          handleEvent(event, assistantMessage);
+          handleEvent(event, assistantMessage, prevPhase);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to send message');
@@ -282,8 +369,12 @@ export function useDesignSession({
     error,
     messages,
     sessionState,
+    pendingUIComponent,
+    debugEvents,
     connect,
     sendMessage,
     disconnect,
+    clearDebugEvents,
+    clearPendingUIComponent,
   };
 }

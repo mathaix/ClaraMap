@@ -170,7 +170,6 @@ Transition to "complete" when the user approves the blueprint.
 3. Call `mcp__clara__hydrate_phase2` with:
    ```json
    {
-     "session_id": "<current_session_id>",
      "goal": "<structured goal summary>"
    }
    ```
@@ -182,7 +181,6 @@ Transition to "complete" when the user approves the blueprint.
 2. Call `mcp__clara__hydrate_phase3` with:
    ```json
    {
-     "session_id": "<current_session_id>",
      "goal": "<goal from Phase 1>",
      "role": "<agent role>",
      "capabilities": ["<cap1>", "<cap2>", ...],

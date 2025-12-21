@@ -10,7 +10,15 @@ export type AGUIEventType =
   | 'TEXT_MESSAGE_END'
   | 'TOOL_CALL_START'
   | 'TOOL_CALL_END'
+  | 'CUSTOM'
   | 'ERROR';
+
+// Custom event names for Clara UI components
+export type ClaraCustomEventName =
+  | 'clara:ask'
+  | 'clara:agent_configured'
+  | 'clara:blueprint_preview'
+  | 'clara:prompt_editor';
 
 export interface AGUIEvent {
   type: AGUIEventType;
@@ -50,6 +58,13 @@ export interface ErrorEvent extends AGUIEvent {
   message: string;
 }
 
+// CUSTOM event for Clara-specific UI components
+export interface CustomEvent extends AGUIEvent {
+  type: 'CUSTOM';
+  name: ClaraCustomEventName;
+  value: UIComponent;
+}
+
 // Design Session State
 export type DesignPhase = 'goal_understanding' | 'agent_configuration' | 'blueprint_design' | 'complete';
 
@@ -68,6 +83,17 @@ export interface DebugInfo {
   message_count: number;
   domain_confidence: number;
   discussed_topics: string[];
+}
+
+// Debug event types for the debug panel
+export type DebugEventType = 'tool_call' | 'phase_transition' | 'hydration' | 'state_update' | 'error';
+
+export interface DebugEvent {
+  id: string;
+  timestamp: Date;
+  type: DebugEventType;
+  title: string;
+  details: Record<string, unknown>;
 }
 
 export interface DesignSessionState {
@@ -172,8 +198,16 @@ export interface AgentConfiguredUIComponent {
   focus_areas?: string[];
 }
 
+// Prompt editor UI Component (from prompt_editor tool)
+export interface PromptEditorUIComponent {
+  type: 'prompt_editor';
+  title: string;
+  prompt: string;
+  description?: string;
+}
+
 // Union type for all UI components
-export type UIComponent = AskUIComponent | AgentConfiguredUIComponent;
+export type UIComponent = AskUIComponent | AgentConfiguredUIComponent | PromptEditorUIComponent;
 
 // Parse UI component from message content
 export function parseUIComponent(content: string): UIComponent | null {

@@ -2,19 +2,21 @@
  * Design Assistant page - full-screen chat interface with blueprint sidebar.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDesignSession } from '../hooks/useDesignSession';
 import {
   ChatMessage,
   ChatInput,
   BlueprintSidebar,
+  DebugPanel,
 } from '../components/design-assistant';
 
 export function DesignAssistantPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
 
   const {
     isConnected,
@@ -23,9 +25,12 @@ export function DesignAssistantPage() {
     error,
     messages,
     sessionState,
+    pendingUIComponent,
+    debugEvents,
     connect,
     sendMessage,
     disconnect,
+    clearPendingUIComponent,
   } = useDesignSession({ projectId: projectId || 'default' });
 
   // Connect on mount
@@ -47,7 +52,14 @@ export function DesignAssistantPage() {
   };
 
   const handleOptionSelect = (optionId: string) => {
+    clearPendingUIComponent(); // Clear UI component when user interacts
     sendMessage(`I chose: ${optionId}`);
+  };
+
+  const handlePromptSave = (editedPrompt: string) => {
+    clearPendingUIComponent(); // Clear the prompt editor
+    // Send the edited prompt with a marker so the backend knows it's the finalized prompt
+    sendMessage(`[PROMPT_SAVED]${editedPrompt}[/PROMPT_SAVED]`);
   };
 
   const handleClose = () => {
@@ -209,13 +221,22 @@ export function DesignAssistantPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {messages.map((message) => (
-                  <ChatMessage
-                    key={message.id}
-                    message={message}
-                    onOptionSelect={handleOptionSelect}
-                  />
-                ))}
+                {messages.map((message, index) => {
+                  // Pass pendingUIComponent to the last assistant message
+                  const isLastAssistantMessage =
+                    message.role === 'assistant' &&
+                    index === messages.length - 1;
+
+                  return (
+                    <ChatMessage
+                      key={message.id}
+                      message={message}
+                      onOptionSelect={handleOptionSelect}
+                      onPromptSave={handlePromptSave}
+                      externalUIComponent={isLastAssistantMessage ? pendingUIComponent : null}
+                    />
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </div>
             )}
@@ -238,6 +259,13 @@ export function DesignAssistantPage() {
 
       {/* Blueprint Sidebar */}
       <BlueprintSidebar state={sessionState} />
+
+      {/* Debug Panel */}
+      <DebugPanel
+        events={debugEvents}
+        isOpen={isDebugOpen}
+        onToggle={() => setIsDebugOpen(!isDebugOpen)}
+      />
     </div>
   );
 }

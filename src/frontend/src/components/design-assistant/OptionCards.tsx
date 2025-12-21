@@ -36,16 +36,21 @@ export function OptionCards({
         return next;
       });
     } else {
-      // Single select - immediately submit
+      // Single select - immediately submit with label (not ID)
       setIsSubmitted(true);
-      onSelect(optionId);
+      const selectedOption = options.find((opt) => opt.id === optionId);
+      onSelect(selectedOption?.label || optionId);
     }
   };
 
   const handleSubmit = () => {
     if (selectedIds.size === 0) return;
     setIsSubmitted(true);
-    onSelect(Array.from(selectedIds).join(', '));
+    // Send labels (not IDs) for multi-select
+    const selectedLabels = options
+      .filter((opt) => selectedIds.has(opt.id))
+      .map((opt) => opt.label);
+    onSelect(selectedLabels.join(', '));
   };
 
   return (

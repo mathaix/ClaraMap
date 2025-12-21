@@ -4,30 +4,44 @@
 
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import type { ChatMessage as ChatMessageType, AskUIComponent, AgentConfiguredUIComponent } from '../../types/design-session';
+import type { ChatMessage as ChatMessageType, AskUIComponent, AgentConfiguredUIComponent, PromptEditorUIComponent, UIComponent } from '../../types/design-session';
 import { parseUIComponent, stripUIComponentMarkers } from '../../types/design-session';
 import { OptionCards } from './OptionCards';
 import { AgentConfiguredCard } from './AgentConfiguredCard';
+import { PromptEditor } from './PromptEditor';
 
 interface ChatMessageProps {
   message: ChatMessageType;
   onOptionSelect?: (optionId: string) => void;
+  /** Callback when user saves an edited prompt */
+  onPromptSave?: (editedPrompt: string) => void;
+  /** UI component from CUSTOM event - takes precedence over text parsing */
+  externalUIComponent?: UIComponent | null;
 }
 
-export function ChatMessage({ message, onOptionSelect }: ChatMessageProps) {
+export function ChatMessage({ message, onOptionSelect, onPromptSave, externalUIComponent }: ChatMessageProps) {
   const isUser = message.role === 'user';
 
   // Parse any UI components from the message
+  // External UI component from CUSTOM events takes precedence over text parsing
   const { textContent, uiComponent } = useMemo(() => {
     if (isUser) {
       return { textContent: message.content, uiComponent: null };
     }
 
+    // Use external component if provided (from CUSTOM event)
+    if (externalUIComponent) {
+      // Still strip any legacy markers from content
+      const text = stripUIComponentMarkers(message.content);
+      return { textContent: text, uiComponent: externalUIComponent };
+    }
+
+    // Fallback to text parsing for backwards compatibility
     const component = parseUIComponent(message.content);
     const text = stripUIComponentMarkers(message.content);
 
     return { textContent: text, uiComponent: component };
-  }, [message.content, isUser]);
+  }, [message.content, isUser, externalUIComponent]);
 
   return (
     <div
@@ -100,6 +114,18 @@ export function ChatMessage({ message, onOptionSelect }: ChatMessageProps) {
         {uiComponent && uiComponent.type === 'agent_configured' && (
           <div className="mt-4">
             <AgentConfiguredCard agent={uiComponent as AgentConfiguredUIComponent} />
+          </div>
+        )}
+
+        {/* Prompt editor (from Phase 3 - editable system prompt) */}
+        {uiComponent && uiComponent.type === 'prompt_editor' && onPromptSave && (
+          <div className="mt-4">
+            <PromptEditor
+              title={(uiComponent as PromptEditorUIComponent).title}
+              prompt={(uiComponent as PromptEditorUIComponent).prompt}
+              description={(uiComponent as PromptEditorUIComponent).description}
+              onSave={onPromptSave}
+            />
           </div>
         )}
       </div>

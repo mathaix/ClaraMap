@@ -111,9 +111,13 @@ AgentSchema = {
             "items": {"type": "string"},
             "description": "Topics this agent should cover",
         },
-        "tone": {"type": "string", "description": "Communication tone (formal, friendly)"},
+        "tone": {"type": "string", "description": "Communication tone (formal, conversational, technical)"},
+        "system_prompt": {
+            "type": "string",
+            "description": "Full system prompt template for the interviewer agent",
+        },
     },
-    "required": ["name", "topics"],
+    "required": ["name", "topics", "system_prompt"],
 }
 
 AskSchema = {
@@ -202,25 +206,17 @@ GoalSummarySchema = {
 HydratePhase2Schema = {
     "type": "object",
     "properties": {
-        "session_id": {
-            "type": "string",
-            "description": "The session ID to hydrate the prompt for",
-        },
         "goal": {
             "type": "string",
             "description": "The project goal summary from Phase 1 (what the user wants to accomplish)",
         },
     },
-    "required": ["session_id", "goal"],
+    "required": ["goal"],
 }
 
 HydratePhase3Schema = {
     "type": "object",
     "properties": {
-        "session_id": {
-            "type": "string",
-            "description": "The session ID to hydrate the prompt for",
-        },
         "goal": {
             "type": "string",
             "description": "The project goal summary from Phase 1",
@@ -244,23 +240,38 @@ HydratePhase3Schema = {
             "description": "How the agent should behave in interviews",
         },
     },
-    "required": ["session_id", "goal", "role", "capabilities", "expertise_areas", "interaction_style"],
+    "required": ["goal", "role", "capabilities", "expertise_areas", "interaction_style"],
 }
 
 GetHydratedPromptSchema = {
     "type": "object",
     "properties": {
-        "session_id": {
-            "type": "string",
-            "description": "The session ID to retrieve the hydrated prompt for",
-        },
         "phase": {
             "type": "string",
             "enum": ["goal_understanding", "agent_configuration", "blueprint_design"],
             "description": "The phase to get the hydrated prompt for",
         },
     },
-    "required": ["session_id", "phase"],
+    "required": ["phase"],
+}
+
+PromptEditorSchema = {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "Title for the prompt editor (e.g., 'Interviewer System Prompt')",
+        },
+        "prompt": {
+            "type": "string",
+            "description": "The generated system prompt to display for editing",
+        },
+        "description": {
+            "type": "string",
+            "description": "Brief description of what this prompt does",
+        },
+    },
+    "required": ["title", "prompt"],
 }
 
 
@@ -317,15 +328,16 @@ def create_clara_tools(session_id: str):
             }]
         }
 
-    @tool("agent", "Configure an interview agent", AgentSchema)
+    @tool("agent", "Configure an interview agent with system prompt", AgentSchema)
     async def agent_tool(args: dict) -> dict[str, Any]:
-        """Add an interview agent configuration."""
+        """Add an interview agent configuration with system prompt."""
         state = get_session_state(session_id)
         agent = {
             "name": args["name"],
             "persona": args.get("persona"),
             "topics": args["topics"],
-            "tone": args.get("tone", "professional"),
+            "tone": args.get("tone", "conversational"),
+            "system_prompt": args["system_prompt"],
         }
 
         # Check if agent already exists, update if so
@@ -350,10 +362,9 @@ def create_clara_tools(session_id: str):
     async def ask_tool(args: dict) -> dict[str, Any]:
         """Show interactive options to user.
 
-        Note: The actual UI rendering happens on the frontend.
-        This tool returns the options structure for the frontend to display.
+        Note: The actual UI rendering happens via CUSTOM AG-UI events
+        emitted by the pre_tool_hook in design_assistant.py.
         """
-        import json
         logger.info(f"[{session_id}] Asking user: {args['question']}")
         # Store UI component in session state for frontend access
         state = get_session_state(session_id)
@@ -364,54 +375,93 @@ def create_clara_tools(session_id: str):
             "multi_select": args.get("multi_select", False),
         }
         state["pending_ui_component"] = ui_component
-        options_json = json.dumps(ui_component)
-        # Return in message text for direct streaming
+        # UI is rendered via CUSTOM event - just return confirmation
         return {
             "content": [{
                 "type": "text",
-                "text": f"[UI_COMPONENT]{options_json}[/UI_COMPONENT]"
+                "text": f"Presenting options to user: {args['question']}"
             }]
         }
 
     @tool("phase", "Transition to a different design phase", PhaseSchema)
     async def phase_tool(args: dict) -> dict[str, Any]:
-        """Change the current design phase."""
+        """Change the current design phase.
+
+        Note: This also needs to update the session state (not just tool state).
+        The on_phase_change callback handles this if set.
+        """
         state = get_session_state(session_id)
         old_phase = state["phase"]
-        state["phase"] = args["phase"]
-        logger.info(f"[{session_id}] Phase: {old_phase} -> {args['phase']}")
+        new_phase = args["phase"]
+        state["phase"] = new_phase
+
+        # Call the phase change callback if registered
+        callback = state.get("_on_phase_change")
+        if callback:
+            callback(new_phase)
+
+        logger.info(f"[{session_id}] Phase: {old_phase} -> {new_phase}")
         return {
             "content": [{
                 "type": "text",
-                "text": f"Transitioned from {old_phase} to {args['phase']}"
+                "text": f"Transitioned from {old_phase} to {new_phase}"
             }]
         }
 
     @tool("preview", "Get a preview of the current blueprint", {"type": "object", "properties": {}})
     async def preview_tool(args: dict) -> dict[str, Any]:
-        """Return the current blueprint state."""
+        """Return the current blueprint state as InterviewBlueprint JSON."""
         import json
+        from datetime import datetime
         state = get_session_state(session_id)
         logger.info(f"[{session_id}] Blueprint preview requested")
+
+        # Build InterviewBlueprint JSON structure
+        project = state["project"] or {}
+        agent_caps = state.get("agent_capabilities") or {}
+
         blueprint = {
-            "project": state["project"],
-            "entities": state["entities"],
-            "agents": state["agents"],
-            "phase": state["phase"],
-            "agent_capabilities": state.get("agent_capabilities"),
+            "id": session_id,
+            "version": "1.0",
+            "created_at": datetime.utcnow().isoformat(),
+            "project": {
+                "name": project.get("name"),
+                "type": project.get("type"),
+                "domain": project.get("domain"),
+                "description": project.get("description"),
+            },
+            "knowledge_areas": [
+                {
+                    "name": entity["name"],
+                    "attributes": entity["attributes"],
+                    "description": entity.get("description"),
+                }
+                for entity in state["entities"]
+            ],
+            "interview_agent": {
+                "role": agent_caps.get("role"),
+                "expertise_areas": agent_caps.get("expertise_areas", []),
+                "interaction_style": agent_caps.get("interaction_style"),
+                "capabilities": agent_caps.get("capabilities", []),
+                "focus_areas": agent_caps.get("focus_areas", []),
+                # Include the configured agent details
+                "config": state["agents"][0] if state["agents"] else None,
+            },
         }
+
         summary_parts = []
-        if state["project"]:
-            summary_parts.append(f"Project: {state['project']['name']}")
-        summary_parts.append(f"Entities: {len(state['entities'])}")
-        summary_parts.append(f"Agents: {len(state['agents'])}")
-        summary_parts.append(f"Phase: {state['phase']}")
+        if project.get("name"):
+            summary_parts.append(f"Project: {project['name']}")
+        summary_parts.append(f"Knowledge Areas: {len(state['entities'])}")
+        if agent_caps.get("role"):
+            summary_parts.append(f"Interviewer: {agent_caps['role']}")
+
         blueprint_json = json.dumps(blueprint, indent=2)
         summary = ", ".join(summary_parts)
         return {
             "content": [{
                 "type": "text",
-                "text": f"Blueprint Preview:\n{blueprint_json}\n\nSummary: {summary}"
+                "text": f"InterviewBlueprint:\n```json\n{blueprint_json}\n```\n\nSummary: {summary}"
             }]
         }
 
@@ -419,10 +469,9 @@ def create_clara_tools(session_id: str):
     async def agent_summary_tool(args: dict) -> dict[str, Any]:
         """Show the user what specialist agent was configured in Phase 2.
 
-        This creates a UI component that displays the agent's role,
-        expertise areas, and interaction style.
+        Note: The UI card is rendered via CUSTOM AG-UI events
+        emitted by the pre_tool_hook in design_assistant.py.
         """
-        import json
         state = get_session_state(session_id)
 
         # Store the agent capabilities in session state
@@ -437,21 +486,11 @@ def create_clara_tools(session_id: str):
 
         logger.info(f"[{session_id}] Agent configured: {args['role']}")
 
-        # Create UI component for frontend display
-        ui_component = {
-            "type": "agent_configured",
-            "role": args["role"],
-            "expertise_areas": args["expertise_areas"],
-            "interaction_style": args["interaction_style"],
-            "capabilities": args.get("capabilities", []),
-            "focus_areas": args.get("focus_areas", []),
-        }
-        ui_json = json.dumps(ui_component)
-
+        # UI is rendered via CUSTOM event - just return confirmation
         return {
             "content": [{
                 "type": "text",
-                "text": f"[UI_COMPONENT]{ui_json}[/UI_COMPONENT]"
+                "text": f"Specialist agent configured: {args['role']}"
             }]
         }
 
@@ -524,8 +563,8 @@ def create_clara_tools(session_id: str):
         Call this after Phase 1 is complete to prepare Phase 2's prompt
         with the discovered goal information.
         """
-        target_session_id = args["session_id"]
-        state = get_session_state(target_session_id)
+        # Use the bound session_id from the closure
+        state = get_session_state(session_id)
         phase = "agent_configuration"
         context = {"goal": args["goal"]}
 
@@ -544,12 +583,12 @@ def create_clara_tools(session_id: str):
             state["goal_summary"] = state.get("goal_summary", {})
             state["goal_summary"]["goal_text"] = args["goal"]
 
-            logger.info(f"[{target_session_id}] Hydrated Phase 2 prompt with goal")
+            logger.info(f"[{session_id}] Hydrated Phase 2 prompt with goal")
 
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Phase 2 (Agent Configuration) prompt hydrated with goal for session {target_session_id}. Ready to configure specialist agent."
+                    "text": f"Phase 2 (Agent Configuration) prompt hydrated with goal for session {session_id}. Ready to configure specialist agent."
                 }]
             }
         except (ValueError, FileNotFoundError) as e:
@@ -568,8 +607,8 @@ def create_clara_tools(session_id: str):
         Call this after Phase 2 is complete to prepare Phase 3's prompt
         with the configured specialist agent details.
         """
-        target_session_id = args["session_id"]
-        state = get_session_state(target_session_id)
+        # Use the bound session_id from the closure
+        state = get_session_state(session_id)
         phase = "blueprint_design"
 
         # Format capabilities and expertise as bullet lists for the template
@@ -603,12 +642,12 @@ def create_clara_tools(session_id: str):
                 "interaction_style": args["interaction_style"],
             }
 
-            logger.info(f"[{target_session_id}] Hydrated Phase 3 prompt with agent config: {args['role']}")
+            logger.info(f"[{session_id}] Hydrated Phase 3 prompt with agent config: {args['role']}")
 
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Phase 3 (Blueprint Design) prompt hydrated with {args['role']} configuration for session {target_session_id}. Ready to design blueprint."
+                    "text": f"Phase 3 (Blueprint Design) prompt hydrated with {args['role']} configuration for session {session_id}. Ready to design blueprint."
                 }]
             }
         except (ValueError, FileNotFoundError) as e:
@@ -627,19 +666,37 @@ def create_clara_tools(session_id: str):
         Returns the previously hydrated prompt from session state.
         If no hydrated prompt exists, returns an error.
         """
-        target_session_id = args["session_id"]
-        state = get_session_state(target_session_id)
+        # Use the bound session_id from the closure
+        state = get_session_state(session_id)
         phase = args["phase"]
 
         hydrated_data = state["hydrated_prompts"].get(phase)
 
         if not hydrated_data:
             # If not hydrated yet, try to hydrate with current state
+            # Map state keys to template placeholders correctly
             context = {}
-            if state.get("goal_summary"):
-                context.update(state["goal_summary"])
-            if state.get("agent_capabilities"):
-                context.update(state["agent_capabilities"])
+
+            # Extract goal from goal_summary - templates use {{goal}}
+            goal_summary = state.get("goal_summary") or {}
+            if goal_summary.get("goal_text"):
+                context["goal"] = goal_summary["goal_text"]
+            elif goal_summary.get("primary_goal"):
+                context["goal"] = goal_summary["primary_goal"]
+
+            # Extract agent capabilities - templates use {{role}}, {{capabilities}}, etc.
+            agent_caps = state.get("agent_capabilities") or {}
+            if agent_caps.get("role"):
+                context["role"] = agent_caps["role"]
+            if agent_caps.get("capabilities"):
+                # Format as bullet list for template
+                caps = agent_caps["capabilities"]
+                context["capabilities"] = "\n".join(f"- {c}" for c in caps) if isinstance(caps, list) else caps
+            if agent_caps.get("expertise_areas"):
+                areas = agent_caps["expertise_areas"]
+                context["expertise_areas"] = "\n".join(f"- {a}" for a in areas) if isinstance(areas, list) else areas
+            if agent_caps.get("interaction_style"):
+                context["interaction_style"] = agent_caps["interaction_style"]
 
             try:
                 template = load_template(phase)
@@ -650,12 +707,12 @@ def create_clara_tools(session_id: str):
                     "context": context,
                 }
                 hydrated_data = state["hydrated_prompts"][phase]
-                logger.info(f"[{target_session_id}] Auto-hydrated prompt for phase '{phase}'")
+                logger.info(f"[{session_id}] Auto-hydrated prompt for phase '{phase}'")
             except (ValueError, FileNotFoundError) as e:
                 return {
                     "content": [{
                         "type": "text",
-                        "text": f"Error: No hydrated prompt found for session '{target_session_id}' phase '{phase}' and auto-hydration failed: {str(e)}"
+                        "text": f"Error: No hydrated prompt found for session '{session_id}' phase '{phase}' and auto-hydration failed: {str(e)}"
                     }],
                     "isError": True
                 }
@@ -664,6 +721,33 @@ def create_clara_tools(session_id: str):
             "content": [{
                 "type": "text",
                 "text": hydrated_data["prompt"]
+            }]
+        }
+
+    @tool("prompt_editor", "Display a generated prompt for user to review and edit", PromptEditorSchema)
+    async def prompt_editor_tool(args: dict) -> dict[str, Any]:
+        """Show the generated system prompt in an editable UI.
+
+        The user can review and edit the prompt before saving.
+        The UI is rendered via CUSTOM AG-UI events in pre_tool_hook.
+        """
+        state = get_session_state(session_id)
+
+        # Store the prompt in state for the UI to access
+        prompt_data = {
+            "title": args["title"],
+            "prompt": args["prompt"],
+            "description": args.get("description", ""),
+        }
+        state["pending_prompt_editor"] = prompt_data
+
+        logger.info(f"[{session_id}] Showing prompt editor: {args['title']}")
+
+        # UI is rendered via CUSTOM event - return confirmation
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"Displaying prompt editor for: {args['title']}. Waiting for user to review and save."
             }]
         }
 
@@ -684,6 +768,7 @@ def create_clara_tools(session_id: str):
             hydrate_phase2_tool,
             hydrate_phase3_tool,
             get_hydrated_prompt_tool,
+            prompt_editor_tool,
         ],
     )
 
@@ -702,4 +787,5 @@ CLARA_TOOL_NAMES = [
     "mcp__clara__hydrate_phase2",
     "mcp__clara__hydrate_phase3",
     "mcp__clara__get_prompt",
+    "mcp__clara__prompt_editor",
 ]
