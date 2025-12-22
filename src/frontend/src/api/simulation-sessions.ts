@@ -25,6 +25,30 @@ export interface SimulationState {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
+export type CommunicationStyle = 'professional' | 'casual' | 'detailed' | 'brief';
+
+export interface PersonaConfig {
+  role: string;
+  company_url?: string;
+  name?: string;
+  experience_years?: number;
+  communication_style?: CommunicationStyle;
+}
+
+export interface CreateAutoSimulationRequest {
+  system_prompt: string;
+  persona: PersonaConfig;
+  model?: SimulationModel;
+}
+
+export interface AutoSimulationResponse {
+  session_id: string;
+  system_prompt_preview: string;
+  model: SimulationModel;
+  persona_role: string;
+  persona_name: string | null;
+}
+
 /**
  * Create a new simulation session with a custom prompt.
  */
@@ -141,6 +165,113 @@ export async function* sendSimulationMessage(
 
   if (!response.ok) {
     throw new Error(`Failed to send message: ${response.statusText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('No response body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          yield data;
+        } catch {
+          // Skip invalid JSON
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Automated Simulation API Functions
+// ============================================================================
+
+export interface AutoSimulationEvent {
+  type: string;
+  delta?: string;
+  content?: string;
+  message?: string;
+  role?: string;
+  turns?: number;
+}
+
+/**
+ * Create an automated simulation session with a persona.
+ */
+export async function createAutoSimulation(
+  request: CreateAutoSimulationRequest
+): Promise<AutoSimulationResponse> {
+  const response = await fetch(`${API_BASE}/auto`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to create auto-simulation: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Create an automated simulation from a design session's blueprint.
+ */
+export async function createAutoSimulationFromDesignSession(
+  designSessionId: string,
+  persona: PersonaConfig,
+  model?: SimulationModel
+): Promise<AutoSimulationResponse> {
+  const params = new URLSearchParams();
+  if (model) params.set('model', model);
+
+  const url = `${API_BASE}/auto/from-design-session/${designSessionId}${params.toString() ? `?${params}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(persona),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to create auto-simulation: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Run an automated simulation and stream the conversation.
+ */
+export async function* runAutoSimulation(
+  sessionId: string,
+  numTurns: number = 5
+): AsyncGenerator<AutoSimulationEvent> {
+  const response = await fetch(`${API_BASE}/${sessionId}/run-auto`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ num_turns: numTurns }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to run auto-simulation: ${response.statusText}`);
   }
 
   const reader = response.body?.getReader();

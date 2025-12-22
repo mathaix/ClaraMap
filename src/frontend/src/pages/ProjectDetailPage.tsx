@@ -358,6 +358,12 @@ export default function ProjectDetailPage() {
                     >
                       Simulate
                     </Link>
+                    <Link
+                      to={`/projects/${projectId}/auto-simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md"
+                    >
+                      Auto-Simulate
+                    </Link>
                     <button
                       onClick={() => {
                         // TODO: Implement assign interviews modal
