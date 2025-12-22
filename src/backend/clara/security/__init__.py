@@ -16,6 +16,9 @@ class InputSanitizer:
     # Maximum lengths for different input types
     MAX_MESSAGE_LENGTH = 10000
     MAX_PROMPT_LENGTH = 50000
+    MAX_NAME_LENGTH = 200
+    MAX_DESCRIPTION_LENGTH = 2000
+    MAX_ARRAY_ITEMS = 50
 
     # Patterns that might indicate prompt injection attempts
     INJECTION_PATTERNS = [
@@ -30,7 +33,7 @@ class InputSanitizer:
     ]
 
     @classmethod
-    def sanitize_message(cls, message: str) -> str:
+    def sanitize_message(cls, message: str | None) -> str:
         """Sanitize a user message.
 
         Args:
@@ -54,7 +57,7 @@ class InputSanitizer:
         return message
 
     @classmethod
-    def sanitize_system_prompt(cls, prompt: str) -> str:
+    def sanitize_system_prompt(cls, prompt: str | None) -> str:
         """Sanitize a system prompt extracted from database.
 
         Args:
@@ -78,6 +81,78 @@ class InputSanitizer:
         return prompt
 
     @classmethod
+    def sanitize_name(cls, name: str | None) -> str:
+        """Sanitize a name (entity name, agent name, project name).
+
+        Args:
+            name: The raw name
+
+        Returns:
+            Sanitized name
+        """
+        if not name:
+            return ""
+
+        # Truncate to max length
+        name = name[:cls.MAX_NAME_LENGTH]
+
+        # Strip leading/trailing whitespace
+        name = name.strip()
+
+        # Normalize unicode
+        name = name.encode('utf-8', errors='ignore').decode('utf-8')
+
+        return name
+
+    @classmethod
+    def sanitize_description(cls, description: str | None) -> str:
+        """Sanitize a description field.
+
+        Args:
+            description: The raw description
+
+        Returns:
+            Sanitized description
+        """
+        if not description:
+            return ""
+
+        # Truncate to max length
+        description = description[:cls.MAX_DESCRIPTION_LENGTH]
+
+        # Strip leading/trailing whitespace
+        description = description.strip()
+
+        # Normalize unicode
+        description = description.encode('utf-8', errors='ignore').decode('utf-8')
+
+        return description
+
+    @classmethod
+    def sanitize_array(cls, items: list | None, max_item_length: int = 500) -> list[str]:
+        """Sanitize an array of strings.
+
+        Args:
+            items: The raw list of items
+            max_item_length: Maximum length for each item
+
+        Returns:
+            Sanitized list with bounded size
+        """
+        if not items:
+            return []
+
+        # Limit number of items
+        items = items[:cls.MAX_ARRAY_ITEMS]
+
+        # Sanitize each item
+        return [
+            str(item)[:max_item_length].strip()
+            for item in items
+            if item
+        ]
+
+    @classmethod
     def detect_injection_attempt(cls, text: str) -> bool:
         """Check if text contains potential prompt injection patterns.
 
@@ -98,9 +173,39 @@ class InputSanitizer:
         """Escape HTML entities in text.
 
         Args:
-            text: The raw text
+            text: The text to escape
 
         Returns:
             HTML-escaped text
         """
-        return html.escape(text)
+        return html.escape(text, quote=True)
+
+    @classmethod
+    def sanitize_template_value(cls, value: str | None) -> str:
+        """Sanitize a value that will be inserted into a template.
+
+        Prevents template injection by escaping special characters.
+
+        Args:
+            value: The raw value
+
+        Returns:
+            Sanitized value safe for template insertion
+        """
+        if not value:
+            return ""
+
+        # Truncate to reasonable length
+        value = value[:cls.MAX_DESCRIPTION_LENGTH]
+
+        # Strip whitespace
+        value = value.strip()
+
+        # Normalize unicode
+        value = value.encode('utf-8', errors='ignore').decode('utf-8')
+
+        # Don't allow template markers that could cause injection
+        # Replace {{ and }} with escaped versions
+        value = value.replace("{{", "{ {").replace("}}", "} }")
+
+        return value

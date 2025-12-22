@@ -6,12 +6,18 @@ and trigger UI components.
 
 import logging
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from clara.security import InputSanitizer
+
 logger = logging.getLogger(__name__)
+
+# Session TTL in minutes (for memory leak prevention)
+SESSION_TTL_MINUTES = 60
 
 # Path to prompt templates
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -35,15 +41,21 @@ def load_template(phase: str) -> str:
 
 
 def hydrate_template(template: str, context: dict[str, Any]) -> str:
-    """Replace {{placeholders}} in template with context values."""
+    """Replace {{placeholders}} in template with context values.
+
+    Sanitizes all values to prevent template injection attacks.
+    """
     def replace_placeholder(match: re.Match) -> str:
         key = match.group(1).strip()
         value = context.get(key, "")
         if value is None:
             return ""
         if isinstance(value, list):
-            return ", ".join(str(v) for v in value)
-        return str(value)
+            # Sanitize each item in the list
+            sanitized = [InputSanitizer.sanitize_template_value(str(v)) for v in value]
+            return ", ".join(sanitized)
+        # Sanitize the value to prevent template injection
+        return InputSanitizer.sanitize_template_value(str(value))
 
     return re.sub(r"\{\{(\w+)\}\}", replace_placeholder, template)
 
@@ -63,13 +75,39 @@ def get_session_state(session_id: str) -> dict[str, Any]:
             "agent_capabilities": None,
             "goal_summary": None,
             "hydrated_prompts": {},  # phase -> hydrated prompt text
+            "_created_at": datetime.now(),
+            "_last_activity": datetime.now(),
         }
+    else:
+        # Update last activity timestamp
+        _session_state[session_id]["_last_activity"] = datetime.now()
     return _session_state[session_id]
 
 
 def clear_session_state(session_id: str) -> None:
     """Clear session state when session ends."""
     _session_state.pop(session_id, None)
+
+
+def cleanup_stale_sessions() -> int:
+    """Remove sessions that have exceeded the TTL.
+
+    Returns:
+        Number of sessions cleaned up
+    """
+    cutoff = datetime.now() - timedelta(minutes=SESSION_TTL_MINUTES)
+    stale_ids = [
+        sid for sid, state in _session_state.items()
+        if state.get("_last_activity", datetime.now()) < cutoff
+    ]
+
+    for sid in stale_ids:
+        _session_state.pop(sid, None)
+
+    if stale_ids:
+        logger.info(f"Cleaned up {len(stale_ids)} stale design session states")
+
+    return len(stale_ids)
 
 
 # Tool input schemas as dicts (for the SDK)
@@ -286,17 +324,24 @@ def create_clara_tools(session_id: str):
     async def project_tool(args: dict) -> dict[str, Any]:
         """Set project details."""
         state = get_session_state(session_id)
+
+        # Sanitize inputs
+        name = InputSanitizer.sanitize_name(args.get("name", ""))
+        project_type = InputSanitizer.sanitize_name(args.get("type", ""))
+        domain = InputSanitizer.sanitize_name(args.get("domain"))
+        description = InputSanitizer.sanitize_description(args.get("description"))
+
         state["project"] = {
-            "name": args["name"],
-            "type": args["type"],
-            "domain": args.get("domain"),
-            "description": args.get("description"),
+            "name": name,
+            "type": project_type,
+            "domain": domain,
+            "description": description,
         }
-        logger.info(f"[{session_id}] Project set: {args['name']}")
+        logger.info(f"[{session_id}] Project set: {name}")
         return {
             "content": [{
                 "type": "text",
-                "text": f"Project '{args['name']}' configured as {args['type']}"
+                "text": f"Project '{name}' configured as {project_type}"
             }]
         }
 
@@ -304,14 +349,20 @@ def create_clara_tools(session_id: str):
     async def entity_tool(args: dict) -> dict[str, Any]:
         """Add an entity type."""
         state = get_session_state(session_id)
+
+        # Sanitize inputs
+        name = InputSanitizer.sanitize_name(args.get("name", ""))
+        attributes = InputSanitizer.sanitize_array(args.get("attributes", []))
+        description = InputSanitizer.sanitize_description(args.get("description"))
+
         entity = {
-            "name": args["name"],
-            "attributes": args["attributes"],
-            "description": args.get("description"),
+            "name": name,
+            "attributes": attributes,
+            "description": description,
         }
 
         # Check if entity already exists, update if so
-        existing = next((e for e in state["entities"] if e["name"] == args["name"]), None)
+        existing = next((e for e in state["entities"] if e["name"] == name), None)
         if existing:
             existing.update(entity)
             action = "updated"
@@ -319,12 +370,12 @@ def create_clara_tools(session_id: str):
             state["entities"].append(entity)
             action = "added"
 
-        logger.info(f"[{session_id}] Entity {action}: {args['name']}")
+        logger.info(f"[{session_id}] Entity {action}: {name}")
         count = len(state["entities"])
         return {
             "content": [{
                 "type": "text",
-                "text": f"Entity '{args['name']}' {action}. Total entities: {count}"
+                "text": f"Entity '{name}' {action}. Total entities: {count}"
             }]
         }
 
@@ -332,16 +383,24 @@ def create_clara_tools(session_id: str):
     async def agent_tool(args: dict) -> dict[str, Any]:
         """Add an interview agent configuration with system prompt."""
         state = get_session_state(session_id)
+
+        # Sanitize inputs
+        name = InputSanitizer.sanitize_name(args.get("name", ""))
+        persona = InputSanitizer.sanitize_description(args.get("persona"))
+        topics = InputSanitizer.sanitize_array(args.get("topics", []))
+        tone = InputSanitizer.sanitize_name(args.get("tone", "conversational"))
+        system_prompt = InputSanitizer.sanitize_system_prompt(args.get("system_prompt", ""))
+
         agent = {
-            "name": args["name"],
-            "persona": args.get("persona"),
-            "topics": args["topics"],
-            "tone": args.get("tone", "conversational"),
-            "system_prompt": args["system_prompt"],
+            "name": name,
+            "persona": persona,
+            "topics": topics,
+            "tone": tone,
+            "system_prompt": system_prompt,
         }
 
         # Check if agent already exists, update if so
-        existing = next((a for a in state["agents"] if a["name"] == args["name"]), None)
+        existing = next((a for a in state["agents"] if a["name"] == name), None)
         if existing:
             existing.update(agent)
             action = "updated"
@@ -349,12 +408,12 @@ def create_clara_tools(session_id: str):
             state["agents"].append(agent)
             action = "added"
 
-        logger.info(f"[{session_id}] Agent {action}: {args['name']}")
+        logger.info(f"[{session_id}] Agent {action}: {name}")
         count = len(state["agents"])
         return {
             "content": [{
                 "type": "text",
-                "text": f"Interview agent '{args['name']}' {action}. Total agents: {count}"
+                "text": f"Interview agent '{name}' {action}. Total agents: {count}"
             }]
         }
 
