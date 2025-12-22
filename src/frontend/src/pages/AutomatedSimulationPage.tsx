@@ -192,7 +192,17 @@ export function AutomatedSimulationPage() {
         } else if (event.type === 'SIMULATION_COMPLETE') {
           setStatus('completed');
         } else if (event.type === 'ERROR') {
-          setError(event.message || 'An error occurred');
+          // Handle error message - backend may send object instead of string at runtime
+          const msg = event.message as string | { message?: string } | undefined;
+          let errorMsg: string;
+          if (typeof msg === 'string') {
+            errorMsg = msg;
+          } else if (msg && typeof msg === 'object') {
+            errorMsg = msg.message || JSON.stringify(msg);
+          } else {
+            errorMsg = 'An error occurred';
+          }
+          setError(errorMsg);
           setStatus('error');
         }
       }

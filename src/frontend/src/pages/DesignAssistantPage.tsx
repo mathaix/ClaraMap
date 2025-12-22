@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useDesignSession } from '../hooks/useDesignSession';
+import { saveAgents } from '../api/design-sessions';
 import {
   ChatMessage,
   ChatInput,
@@ -38,6 +39,7 @@ export function DesignAssistantPage() {
 
   // Check if we have agents in the blueprint (meaning simulation is available)
   const hasBlueprint = (sessionState?.preview?.agent_count ?? 0) > 0;
+  const [isSaving, setIsSaving] = useState(false);
 
   // Connect on mount
   useEffect(() => {
@@ -71,6 +73,23 @@ export function DesignAssistantPage() {
   const handleClose = () => {
     disconnect();
     navigate(`/projects/${projectId}`);
+  };
+
+  const handleSaveAndClose = async () => {
+    if (!sessionId) return;
+
+    try {
+      setIsSaving(true);
+      await saveAgents(sessionId);
+      disconnect();
+      navigate(`/projects/${projectId}`);
+    } catch (err) {
+      console.error('Failed to save agents:', err);
+      // Show error but don't close - user might want to retry
+      alert(err instanceof Error ? err.message : 'Failed to save agents');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!projectId) {
@@ -136,6 +155,16 @@ export function DesignAssistantPage() {
               >
                 Simulate Agent
               </Link>
+            )}
+
+            {hasBlueprint && sessionId && (
+              <button
+                onClick={handleSaveAndClose}
+                disabled={isSaving || isStreaming}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSaving ? 'Saving...' : 'Save & Close'}
+              </button>
             )}
 
             <button

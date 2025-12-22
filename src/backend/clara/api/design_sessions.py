@@ -242,7 +242,7 @@ async def get_project_agents(
     InterviewAgent is the canonical source of truth for agents.
     Context files are fetched via the relationship to AgentContextFile.
     """
-    from clara.db.models import InterviewAgent, AgentContextFile
+    from clara.db.models import AgentContextFile, InterviewAgent
 
     # Query InterviewAgent table directly (canonical source)
     result = await db.execute(
@@ -292,6 +292,87 @@ async def get_project_agents(
         project_id=project_id,
         agents=all_agents,
         agent_count=len(all_agents),
+    )
+
+
+class SaveAgentsResponse(BaseModel):
+    """Response after saving agents from a design session."""
+    session_id: str
+    agents_created: int
+    agent_ids: list[str]
+
+
+@router.post("/{session_id}/save-agents", response_model=SaveAgentsResponse)
+async def save_agents(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+) -> SaveAgentsResponse:
+    """Save agents from design session to InterviewAgent table.
+
+    This persists the agent configuration from the session's blueprint_state
+    to the canonical InterviewAgent table, making them available for use.
+    Also marks the session as COMPLETED.
+    """
+    from clara.db.models import InterviewAgent, InterviewAgentStatus
+
+    # Get the design session
+    result = await db.execute(
+        select(DesignSession).where(DesignSession.id == session_id)
+    )
+    db_session = result.scalar_one_or_none()
+
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get agents from blueprint_state
+    blueprint_state = db_session.blueprint_state or {}
+    agents_data = blueprint_state.get("agents", [])
+
+    if not agents_data:
+        raise HTTPException(
+            status_code=400,
+            detail="No agents to save. Complete the design process first."
+        )
+
+    # Get agent capabilities (shared across all agents in this session)
+    agent_capabilities = db_session.agent_capabilities
+
+    created_agent_ids = []
+
+    for agent_data in agents_data:
+        # Generate agent ID
+        agent_id = f"agent_{uuid.uuid4().hex[:16]}"
+
+        # Create InterviewAgent record
+        agent = InterviewAgent(
+            id=agent_id,
+            project_id=db_session.project_id,
+            name=agent_data.get("name", "Interview Agent"),
+            persona=agent_data.get("persona"),
+            topics=agent_data.get("topics", []),
+            tone=agent_data.get("tone"),
+            system_prompt=agent_data.get("system_prompt"),
+            capabilities=agent_capabilities,
+            status=InterviewAgentStatus.DRAFT.value,
+            design_session_id=session_id,
+        )
+        db.add(agent)
+        created_agent_ids.append(agent_id)
+
+    # Mark session as completed
+    db_session.status = DesignSessionStatus.COMPLETED.value
+    db_session.updated_at = datetime.now(UTC)
+
+    await db.commit()
+
+    logger.info(
+        f"Saved {len(created_agent_ids)} agents from session {session_id}: {created_agent_ids}"
+    )
+
+    return SaveAgentsResponse(
+        session_id=session_id,
+        agents_created=len(created_agent_ids),
+        agent_ids=created_agent_ids,
     )
 
 

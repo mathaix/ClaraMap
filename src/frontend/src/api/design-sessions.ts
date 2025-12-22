@@ -66,6 +66,25 @@ export async function getProjectAgents(projectId: string): Promise<ProjectAgents
 }
 
 /**
+ * Response from saving agents.
+ */
+export interface SaveAgentsResponse {
+  session_id: string;
+  agents_created: number;
+  agent_ids: string[];
+}
+
+/**
+ * Save agents from design session to the database.
+ * This persists the configured agents to the InterviewAgent table.
+ */
+export async function saveAgents(sessionId: string): Promise<SaveAgentsResponse> {
+  return apiRequest<SaveAgentsResponse>(`${BASE_URL}/${sessionId}/save-agents`, {
+    method: 'POST',
+  });
+}
+
+/**
  * Parse SSE event from raw text.
  */
 function parseSSEEvent(eventText: string): AGUIEvent | null {
@@ -161,4 +180,5 @@ export const designSessionsApi = {
   getProjectAgents,
   delete: deleteSession,
   streamMessage,
+  saveAgents,
 };
