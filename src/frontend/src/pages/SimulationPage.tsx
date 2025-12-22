@@ -31,7 +31,6 @@ export function SimulationPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState<SimulationModel>('sonnet');
-  const [activeModel, setActiveModel] = useState<SimulationModel>('sonnet');
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -48,8 +47,8 @@ export function SimulationPage() {
 
         let result;
         if (designSessionId) {
-          // Create from design session blueprint
-          result = await createSimulationFromDesignSession(designSessionId);
+          // Create from design session blueprint with selected model
+          result = await createSimulationFromDesignSession(designSessionId, selectedModel);
         } else {
           // Create with default prompt and selected model
           result = await createSimulationSession({
@@ -59,7 +58,6 @@ export function SimulationPage() {
         }
 
         setSessionId(result.session_id);
-        setActiveModel(result.model);
 
         // Get full session state including prompt
         const state = await getSimulationSession(result.session_id);
@@ -191,32 +189,23 @@ export function SimulationPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Model Selector */}
-            {!designSessionId && (
-              <div className="flex items-center gap-2">
-                <label htmlFor="model-select" className="text-sm text-gray-600">
-                  Model:
-                </label>
-                <select
-                  id="model-select"
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value as SimulationModel)}
-                  disabled={isLoading || isStreaming}
-                  className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-                >
-                  <option value="haiku">Haiku (Fast)</option>
-                  <option value="sonnet">Sonnet (Balanced)</option>
-                  <option value="opus">Opus (Most Capable)</option>
-                </select>
-              </div>
-            )}
-
-            {/* Active model indicator when using design session */}
-            {designSessionId && !isLoading && (
-              <span className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 rounded-full">
-                Model: {activeModel}
-              </span>
-            )}
+            {/* Model Selector - always visible */}
+            <div className="flex items-center gap-2">
+              <label htmlFor="model-select" className="text-sm text-gray-600">
+                Model:
+              </label>
+              <select
+                id="model-select"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value as SimulationModel)}
+                disabled={isLoading || isStreaming}
+                className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+              >
+                <option value="haiku">Haiku (Fast)</option>
+                <option value="sonnet">Sonnet (Balanced)</option>
+                <option value="opus">Opus (Most Capable)</option>
+              </select>
+            </div>
 
             <button
               onClick={() => setShowPrompt(!showPrompt)}

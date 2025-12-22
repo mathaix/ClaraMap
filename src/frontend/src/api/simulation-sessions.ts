@@ -48,9 +48,14 @@ export async function createSimulationSession(
  * Create a simulation session from an existing design session's blueprint.
  */
 export async function createSimulationFromDesignSession(
-  designSessionId: string
+  designSessionId: string,
+  model?: SimulationModel
 ): Promise<CreateSimulationResponse> {
-  const response = await fetch(`${API_BASE}/from-design-session/${designSessionId}`, {
+  const url = model
+    ? `${API_BASE}/from-design-session/${designSessionId}?model=${model}`
+    : `${API_BASE}/from-design-session/${designSessionId}`;
+
+  const response = await fetch(url, {
     method: 'POST',
   });
 

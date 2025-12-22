@@ -132,9 +132,17 @@ async def create_simulation(
 @router.post("/from-design-session/{design_session_id}", response_model=CreateSimulationResponse)
 async def create_simulation_from_design_session(
     design_session_id: str,
+    model: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> CreateSimulationResponse:
     """Create a simulation session using the system prompt from a design session's blueprint."""
+    # Validate model if provided
+    if model is not None and model not in VALID_MODELS:
+        valid = ', '.join(sorted(VALID_MODELS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{model}'. Must be one of: {valid}"
+        )
     try:
         # Get the design session
         result = await db.execute(
@@ -177,15 +185,18 @@ async def create_simulation_from_design_session(
     # Sanitize the system prompt
     system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
 
-    # Create simulation session (uses default model from config)
+    # Create simulation session with optional model override
     session_id = str(uuid.uuid4())
 
     session = await simulation_manager.create_session(
         session_id=session_id,
         interviewer_prompt=system_prompt,
+        model=model,
     )
 
-    logger.info(f"Created simulation session {session_id} from design session {design_session_id}")
+    logger.info(
+        f"Created simulation {session_id} from design {design_session_id} (model: {session.model})"
+    )
 
     preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
     return CreateSimulationResponse(
