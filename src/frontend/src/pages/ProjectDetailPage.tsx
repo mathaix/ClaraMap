@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom'
 import { format } from 'date-fns'
 import clsx from 'clsx'
 import {
@@ -26,6 +26,7 @@ const statusStyles: Record<ProjectStatus, string> = {
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { data: project, isLoading, error } = useProject(projectId!)
 
   const [isEditing, setIsEditing] = useState(false)
@@ -93,10 +94,11 @@ export default function ProjectDetailPage() {
   }
 
   // Fetch project agents (aggregated from all sessions)
+  // Include location.key to refetch when navigating back from design page
   useEffect(() => {
     if (!projectId) return
     designSessionsApi.getProjectAgents(projectId).then(setProjectAgents).catch(() => {})
-  }, [projectId])
+  }, [projectId, location.key])
 
   // Check if we have agents (meaning simulation is available)
   const hasBlueprint = (projectAgents?.agents?.length ?? 0) > 0
