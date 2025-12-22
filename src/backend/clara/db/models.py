@@ -63,6 +63,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     templates: Mapped[list["InterviewTemplate"]] = relationship(back_populates="project")
+    interview_agents: Mapped[list["InterviewAgent"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class InterviewTemplate(Base):
@@ -166,6 +169,94 @@ class DesignSessionStatus(str, Enum):
     ABANDONED = "abandoned"
 
 
+class InterviewAgentStatus(str, Enum):
+    """Interview agent statuses."""
+    DRAFT = "draft"
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class InterviewAgent(Base):
+    """Interview Agent - a first-class AI interviewer entity.
+
+    This is the primary agent model that links to projects. Agents are created
+    via the Design Assistant and can be used across multiple interview sessions.
+    """
+
+    __tablename__ = "interview_agents"
+    __table_args__ = (
+        Index("ix_interview_agents_project_id", "project_id"),
+        Index("ix_interview_agents_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
+
+    # Agent identity
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    persona: Mapped[str | None] = mapped_column(Text)
+    topics: Mapped[list[str]] = mapped_column(JSON, default=list)
+    tone: Mapped[str | None] = mapped_column(String(50))
+
+    # Generated configuration
+    system_prompt: Mapped[str | None] = mapped_column(Text)
+
+    # Agent capabilities (from design session)
+    capabilities: Mapped[dict | None] = mapped_column(JSON)
+    # Structure: {"role": str, "capabilities": list, "expertise_areas": list}
+
+    # Status
+    status: Mapped[str] = mapped_column(String(20), default=InterviewAgentStatus.DRAFT.value)
+
+    # Provenance - which design session created this agent
+    design_session_id: Mapped[str | None] = mapped_column(ForeignKey("design_sessions.id"))
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    project: Mapped["Project"] = relationship(back_populates="interview_agents")
+    design_session: Mapped[Optional["DesignSession"]] = relationship(
+        back_populates="created_agents"
+    )
+    context_files: Mapped[list["AgentContextFile"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan"
+    )
+
+
+class AgentContextFile(Base):
+    """Context file uploaded for an interview agent."""
+
+    __tablename__ = "agent_context_files"
+    __table_args__ = (
+        Index("ix_agent_context_files_agent_id", "agent_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("interview_agents.id"), nullable=False)
+
+    # File metadata
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Storage
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    # Timestamps
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationship
+    agent: Mapped["InterviewAgent"] = relationship(back_populates="context_files")
+
+
 class DesignSession(Base):
     """Design Session - tracks blueprint design conversation state.
 
@@ -214,6 +305,11 @@ class DesignSession(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # Relationship - agents created from this design session
+    created_agents: Mapped[list["InterviewAgent"]] = relationship(
+        back_populates="design_session"
+    )
+
 
 class DesignSessionPrompt(Base):
     """Hydrated prompt for a design session phase."""
@@ -224,7 +320,9 @@ class DesignSessionPrompt(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(String(50), ForeignKey("design_sessions.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("design_sessions.id"), nullable=False
+    )
     phase: Mapped[str] = mapped_column(String(30), nullable=False)
     template_name: Mapped[str] = mapped_column(String(100), nullable=False)
     hydrated_prompt: Mapped[str] = mapped_column(Text, nullable=False)
