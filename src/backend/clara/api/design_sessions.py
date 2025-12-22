@@ -28,6 +28,7 @@ router = APIRouter(prefix="/design-sessions", tags=["design-sessions"])
 class CreateSessionRequest(BaseModel):
     """Request to create a new design session."""
     project_id: str
+    add_agent: bool = False  # When True, creates a fresh new session for another agent
 
 
 class CreateSessionResponse(BaseModel):
@@ -71,22 +72,30 @@ async def create_or_resume_session(
 
     If an active session exists for the project, returns that session.
     Otherwise creates a new session.
+
+    If add_agent=True, always creates a fresh new session (ignores existing sessions).
     """
-    # Check for existing active session for this project
-    result = await db.execute(
-        select(DesignSession)
-        .where(DesignSession.project_id == request.project_id)
-        .where(DesignSession.status == DesignSessionStatus.ACTIVE.value)
-        .order_by(DesignSession.updated_at.desc())
-        .limit(1)
-    )
-    existing_session = result.scalar_one_or_none()
+    # If add_agent mode, skip checking for existing session - always create fresh
+    if request.add_agent:
+        existing_session = None
+    else:
+        # Check for existing active session for this project
+        result = await db.execute(
+            select(DesignSession)
+            .where(DesignSession.project_id == request.project_id)
+            .where(DesignSession.status == DesignSessionStatus.ACTIVE.value)
+            .order_by(DesignSession.updated_at.desc())
+            .limit(1)
+        )
+        existing_session = result.scalar_one_or_none()
 
     if existing_session:
         # Resume existing session
         session_id = existing_session.id
         is_new = False
-        logger.info(f"Resuming existing session {session_id} for project {request.project_id}")
+        logger.info(
+            f"Resuming existing session {session_id} for project {request.project_id}"
+        )
 
         # Restore in-memory state from DB
         try:
@@ -190,6 +199,68 @@ async def get_session_by_project(
         turn_count=db_session.turn_count,
         message_count=db_session.message_count,
         status=db_session.status,
+    )
+
+
+class ProjectAgentInfo(BaseModel):
+    """Agent info with session reference for project-level listing."""
+    session_id: str
+    agent_index: int
+    name: str
+    persona: str | None
+    topics: list[str]
+    tone: str | None
+    system_prompt: str | None
+    context_files: list[dict] | None
+
+
+class ProjectAgentsResponse(BaseModel):
+    """All agents for a project, aggregated from all sessions."""
+    project_id: str
+    agents: list[ProjectAgentInfo]
+    session_count: int
+
+
+@router.get("/project/{project_id}/agents", response_model=ProjectAgentsResponse)
+async def get_project_agents(
+    project_id: str,
+    db: AsyncSession = Depends(get_db)
+) -> ProjectAgentsResponse:
+    """Get all agents for a project, aggregated from all active sessions.
+
+    Each agent includes a reference to its session for simulation/editing.
+    """
+    # Get ALL active sessions for this project
+    result = await db.execute(
+        select(DesignSession)
+        .where(DesignSession.project_id == project_id)
+        .where(DesignSession.status == DesignSessionStatus.ACTIVE.value)
+        .order_by(DesignSession.created_at.asc())  # Oldest first for consistent ordering
+    )
+    sessions = result.scalars().all()
+
+    all_agents: list[ProjectAgentInfo] = []
+
+    for session in sessions:
+        blueprint_state = session.blueprint_state or {}
+        agents = blueprint_state.get("agents", [])
+
+        for idx, agent in enumerate(agents):
+            all_agents.append(ProjectAgentInfo(
+                session_id=session.id,
+                agent_index=idx,
+                name=agent.get("name", f"Agent {len(all_agents) + 1}"),
+                persona=agent.get("persona"),
+                topics=agent.get("topics", []),
+                tone=agent.get("tone"),
+                system_prompt=agent.get("system_prompt"),
+                context_files=agent.get("context_files"),
+            ))
+
+    return ProjectAgentsResponse(
+        project_id=project_id,
+        agents=all_agents,
+        session_count=len(sessions),
     )
 
 

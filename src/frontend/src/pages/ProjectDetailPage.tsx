@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import clsx from 'clsx'
@@ -9,8 +9,12 @@ import {
   useDeleteProject,
 } from '../hooks/useProjects'
 import { designSessionsApi } from '../api/design-sessions'
+import { contextFilesApi } from '../api/context-files'
 import type { ProjectStatus, ProjectUpdate } from '../types/project'
-import type { SessionStateResponse } from '../types/design-session'
+import type { ProjectAgentInfo, ProjectAgentsResponse } from '../types/design-session'
+
+// Accepted file types for context upload
+const ACCEPTED_FILE_TYPES = '.xlsx,.xls,.doc,.docx,.pdf,.png,.jpg,.jpeg,.gif,.webp'
 
 const statusStyles: Record<ProjectStatus, string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -29,16 +33,79 @@ export default function ProjectDetailPage() {
   const [editDescription, setEditDescription] = useState('')
   const [editStatus, setEditStatus] = useState<ProjectStatus>('draft')
   const [editTags, setEditTags] = useState('')
-  const [designSession, setDesignSession] = useState<SessionStateResponse | null>(null)
+  const [projectAgents, setProjectAgents] = useState<ProjectAgentsResponse | null>(null)
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<number>>(new Set())
+  const [uploadingAgent, setUploadingAgent] = useState<string | null>(null)  // session_id:agent_index
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({})
 
-  // Fetch design session to check if we have a blueprint
+  const togglePromptExpanded = (index: number) => {
+    setExpandedPrompts((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
+  const handleFileUpload = async (agent: ProjectAgentInfo, files: FileList | null) => {
+    if (!files || files.length === 0) return
+
+    const agentKey = `${agent.session_id}:${agent.agent_index}`
+    setUploadingAgent(agentKey)
+    setUploadError(null)
+
+    try {
+      for (const file of Array.from(files)) {
+        const result = await contextFilesApi.uploadFile(
+          agent.session_id,
+          agent.agent_index,
+          file
+        )
+
+        if (!result.success) {
+          setUploadError(result.error || 'Upload failed')
+          break
+        }
+      }
+
+      // Refresh the agents to get updated file list
+      const updated = await designSessionsApi.getProjectAgents(projectId!)
+      setProjectAgents(updated)
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploadingAgent(null)
+      // Reset file input
+      const agentKey = `${agent.session_id}:${agent.agent_index}`
+      if (fileInputRefs.current[agentKey]) {
+        fileInputRefs.current[agentKey]!.value = ''
+      }
+    }
+  }
+
+  const handleDeleteFile = async (agent: ProjectAgentInfo, fileId: string) => {
+    try {
+      await contextFilesApi.deleteFile(agent.session_id, agent.agent_index, fileId)
+      // Refresh agents
+      const updated = await designSessionsApi.getProjectAgents(projectId!)
+      setProjectAgents(updated)
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Delete failed')
+    }
+  }
+
+  // Fetch project agents (aggregated from all sessions)
   useEffect(() => {
     if (!projectId) return
-    designSessionsApi.getByProject(projectId).then(setDesignSession).catch(() => {})
+    designSessionsApi.getProjectAgents(projectId).then(setProjectAgents).catch(() => {})
   }, [projectId])
 
-  // Check if we have agents in the blueprint (meaning simulation is available)
-  const hasBlueprint = (designSession?.blueprint_state?.agents?.length ?? 0) > 0
+  // Check if we have agents (meaning simulation is available)
+  const hasBlueprint = (projectAgents?.agents?.length ?? 0) > 0
 
   const updateMutation = useUpdateProject()
   const archiveMutation = useArchiveProject()
@@ -202,10 +269,10 @@ export default function ProjectDetailPage() {
               </div>
               <div className="flex gap-2">
                 <Link
-                  to={`/projects/${projectId}/design`}
+                  to={hasBlueprint ? `/projects/${projectId}/design?addAgent=true` : `/projects/${projectId}/design`}
                   className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md"
                 >
-                  Design Blueprint
+                  {hasBlueprint ? 'Add Interview Agent' : 'Create Interview Agent'}
                 </Link>
                 <button
                   onClick={startEditing}
@@ -283,21 +350,21 @@ export default function ProjectDetailPage() {
       <div className="mt-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Interview Agents</h3>
-          {!hasBlueprint && (
-            <Link
-              to={`/projects/${projectId}/design`}
-              className="text-sm text-blue-600 hover:text-blue-700"
-            >
-              Configure agents in Design Blueprint →
-            </Link>
-          )}
+          <Link
+            to={hasBlueprint ? `/projects/${projectId}/design?addAgent=true` : `/projects/${projectId}/design`}
+            className="text-sm text-blue-600 hover:text-blue-700"
+          >
+            {hasBlueprint ? '+ Add another agent' : 'Create your first agent →'}
+          </Link>
         </div>
 
-        {hasBlueprint && designSession?.blueprint_state?.agents ? (
+        {hasBlueprint && projectAgents?.agents ? (
           <div className="space-y-4">
-            {designSession.blueprint_state.agents.map((agent, index) => (
+            {projectAgents.agents.map((agent, index) => {
+              const agentKey = `${agent.session_id}:${agent.agent_index}`
+              return (
               <div
-                key={agent.name || index}
+                key={agentKey}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
               >
                 <div className="flex items-start justify-between">
@@ -349,17 +416,145 @@ export default function ProjectDetailPage() {
                         </div>
                       </div>
                     )}
+
+                    {/* System Prompt Section */}
+                    {agent.system_prompt && (
+                      <div className="mb-3">
+                        <button
+                          onClick={() => togglePromptExpanded(index)}
+                          className="flex items-center gap-2 text-xs font-medium text-gray-500 uppercase tracking-wide hover:text-gray-700"
+                        >
+                          <svg
+                            className={clsx(
+                              'w-4 h-4 transition-transform',
+                              expandedPrompts.has(index) && 'rotate-90'
+                            )}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M9 5l7 7-7 7"
+                            />
+                          </svg>
+                          System Prompt
+                        </button>
+                        {expandedPrompts.has(index) && (
+                          <div className="mt-2 p-3 bg-gray-50 rounded-md border border-gray-200">
+                            <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">
+                              {agent.system_prompt}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Context Files Section */}
+                    <div className="mb-3">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide block mb-2">
+                        Context Files
+                      </span>
+                      {uploadError && uploadingAgent === null && (
+                        <div className="mb-2 px-2 py-1 bg-red-50 border border-red-200 rounded text-xs text-red-600">
+                          {uploadError}
+                        </div>
+                      )}
+                      {agent.context_files && agent.context_files.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 mb-2">
+                          {agent.context_files.map((file) => (
+                            <span
+                              key={file.id}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded group"
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                />
+                              </svg>
+                              {file.name}
+                              <button
+                                onClick={() => handleDeleteFile(agent, file.id)}
+                                className="ml-1 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Remove file"
+                              >
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-400 mb-2">No context files uploaded</p>
+                      )}
+                      <input
+                        type="file"
+                        ref={(el) => (fileInputRefs.current[agentKey] = el)}
+                        className="hidden"
+                        accept={ACCEPTED_FILE_TYPES}
+                        multiple
+                        onChange={(e) => handleFileUpload(agent, e.target.files)}
+                      />
+                      <button
+                        onClick={() => fileInputRefs.current[agentKey]?.click()}
+                        disabled={uploadingAgent === agentKey}
+                        className={clsx(
+                          "inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded",
+                          uploadingAgent === agentKey
+                            ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                            : "text-gray-600 bg-white border border-gray-300 hover:bg-gray-50"
+                        )}
+                      >
+                        {uploadingAgent === agentKey ? (
+                          <>
+                            <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                            Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              className="w-3 h-3"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M12 4v16m8-8H4"
+                              />
+                            </svg>
+                            Add Files
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex gap-2 ml-4">
                     <Link
-                      to={`/projects/${projectId}/simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      to={`/projects/${projectId}/simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md"
                     >
                       Simulate
                     </Link>
                     <Link
-                      to={`/projects/${projectId}/auto-simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      to={`/projects/${projectId}/auto-simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md"
                     >
                       Auto-Simulate
@@ -376,7 +571,7 @@ export default function ProjectDetailPage() {
                   </div>
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         ) : (
           <div className="bg-gray-50 rounded-lg border border-gray-200 p-8 text-center">

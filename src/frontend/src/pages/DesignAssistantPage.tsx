@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useDesignSession } from '../hooks/useDesignSession';
 import {
   ChatMessage,
@@ -14,6 +14,8 @@ import {
 
 export function DesignAssistantPage() {
   const { projectId } = useParams<{ projectId: string }>();
+  const [searchParams] = useSearchParams();
+  const addAgent = searchParams.get('addAgent') === 'true';
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -32,7 +34,7 @@ export function DesignAssistantPage() {
     sendMessage,
     disconnect,
     clearPendingUIComponent,
-  } = useDesignSession({ projectId: projectId || 'default' });
+  } = useDesignSession({ projectId: projectId || 'default', addAgent });
 
   // Check if we have agents in the blueprint (meaning simulation is available)
   const hasBlueprint = (sessionState?.preview?.agent_count ?? 0) > 0;

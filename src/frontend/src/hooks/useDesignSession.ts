@@ -22,6 +22,7 @@ import type {
 
 interface UseDesignSessionOptions {
   projectId: string;
+  addAgent?: boolean;
 }
 
 interface UseDesignSessionReturn {
@@ -72,6 +73,7 @@ const initialSessionState: DesignSessionState = {
 
 export function useDesignSession({
   projectId,
+  addAgent = false,
 }: UseDesignSessionOptions): UseDesignSessionReturn {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -170,12 +172,16 @@ export function useDesignSession({
     setError(null);
 
     try {
-      const response = await designSessionsApi.create({ project_id: projectId });
+      const response = await designSessionsApi.create({
+        project_id: projectId,
+        add_agent: addAgent,
+      });
       setSessionId(response.session_id);
       setIsConnected(true);
 
-      if (response.is_new) {
-        // New session - start fresh
+      if (response.is_new || addAgent) {
+        // New session or add agent mode - start fresh conversation
+        // For addAgent, backend creates new session with copied blueprint state
         setSessionState(initialSessionState);
         setMessages([]);
       } else {
@@ -189,7 +195,7 @@ export function useDesignSession({
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, isConnected, restoreSessionState]);
+  }, [projectId, addAgent, isConnected, restoreSessionState]);
 
   const disconnect = useCallback(async () => {
     if (!sessionId) return;
