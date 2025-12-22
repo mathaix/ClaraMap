@@ -7,6 +7,7 @@ Supports two modes:
 The Interview Agent always introduces itself first when the simulation starts.
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from datetime import datetime, timedelta
 
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+from clara.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +78,7 @@ class SimulationSession:
             permission_mode="bypassPermissions",
             system_prompt=self.interviewer_prompt,
             allowed_tools=[],
-            model="sonnet"
+            model=settings.simulation_interviewer_model
         )
         self._interviewer_client = ClaudeSDKClient(options=interviewer_options)
         await self._interviewer_client.__aenter__()
@@ -87,7 +90,7 @@ class SimulationSession:
                 permission_mode="bypassPermissions",
                 system_prompt=simulated_user_prompt,
                 allowed_tools=[],
-                model="haiku"  # Use faster model for simulated user
+                model=settings.simulation_user_model  # Use faster model for simulated user
             )
             self._simulated_user_client = ClaudeSDKClient(options=user_options)
             await self._simulated_user_client.__aenter__()
@@ -97,10 +100,21 @@ class SimulationSession:
 
     async def stop(self) -> None:
         """Stop the simulation session."""
-        if self._interviewer_client and self._running:
-            await self._interviewer_client.__aexit__(None, None, None)
-        if self._simulated_user_client:
-            await self._simulated_user_client.__aexit__(None, None, None)
+        # Always cleanup both clients if they exist, regardless of _running state
+        try:
+            if self._interviewer_client:
+                await self._interviewer_client.__aexit__(None, None, None)
+                self._interviewer_client = None
+        except Exception as e:
+            logger.warning(f"Error closing interviewer client: {e}")
+
+        try:
+            if self._simulated_user_client:
+                await self._simulated_user_client.__aexit__(None, None, None)
+                self._simulated_user_client = None
+        except Exception as e:
+            logger.warning(f"Error closing simulated user client: {e}")
+
         self._running = False
         logger.info(f"Stopped simulation session {self.session_id}")
 
@@ -382,6 +396,13 @@ def is_safe_url(url: str) -> bool:
         return False
 
 
+# Constants for fetch_website_context
+MAX_CONTENT_LENGTH = 1_000_000  # 1MB max
+MAX_REDIRECTS = 5
+ALLOWED_CONTENT_TYPES = {"text/html", "text/plain", "application/xhtml+xml"}
+MAX_TEXT_LENGTH = 5000
+
+
 async def fetch_website_context(url: str) -> str:
     """Fetch and extract relevant context from a website.
 
@@ -393,9 +414,25 @@ async def fetch_website_context(url: str) -> str:
         return "(URL blocked: only public HTTP/HTTPS URLs are allowed)"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            max_redirects=MAX_REDIRECTS,
+        ) as client:
             response = await client.get(url)
             response.raise_for_status()
+
+            # Validate Content-Type
+            content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+            if content_type and content_type not in ALLOWED_CONTENT_TYPES:
+                logger.warning(f"Blocked non-HTML content type: {content_type}")
+                return f"(Content type not supported: {content_type})"
+
+            # Check Content-Length if available
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+                logger.warning(f"Content too large: {content_length} bytes")
+                return "(Content too large to process)"
 
             # Get raw HTML
             html = response.text
@@ -415,21 +452,25 @@ async def fetch_website_context(url: str) -> str:
             text = re.sub(r'\s+', ' ', text).strip()
 
             # Limit to reasonable size
-            if len(text) > 5000:
-                text = text[:5000] + "..."
+            if len(text) > MAX_TEXT_LENGTH:
+                text = text[:MAX_TEXT_LENGTH] + "..."
 
             return text
 
+    except httpx.TooManyRedirects:
+        logger.warning(f"Too many redirects for URL: {url}")
+        return "(Too many redirects)"
     except Exception as e:
         logger.warning(f"Failed to fetch website context from {url}: {e}")
         return f"(Could not fetch website content: {e})"
 
 
 class SimulationSessionManager:
-    """Manages simulation sessions."""
+    """Manages simulation sessions with thread-safe operations."""
 
     def __init__(self):
         self._sessions: dict[str, SimulationSession] = {}
+        self._lock = asyncio.Lock()
 
     async def cleanup_stale_sessions(self) -> int:
         """Remove sessions that have exceeded the TTL.
@@ -437,19 +478,22 @@ class SimulationSessionManager:
         Returns:
             Number of sessions cleaned up
         """
-        cutoff = datetime.now() - timedelta(minutes=SESSION_TTL_MINUTES)
-        stale_ids = [
-            sid for sid, session in self._sessions.items()
-            if session.last_activity < cutoff
-        ]
+        async with self._lock:
+            cutoff = datetime.now() - timedelta(minutes=SESSION_TTL_MINUTES)
+            stale_ids = [
+                sid for sid, session in self._sessions.items()
+                if session.last_activity < cutoff
+            ]
 
-        for sid in stale_ids:
-            await self.close_session(sid)
+            for sid in stale_ids:
+                if sid in self._sessions:
+                    session = self._sessions.pop(sid)
+                    await session.stop()
 
-        if stale_ids:
-            logger.info(f"Cleaned up {len(stale_ids)} stale simulation sessions")
+            if stale_ids:
+                logger.info(f"Cleaned up {len(stale_ids)} stale simulation sessions")
 
-        return len(stale_ids)
+            return len(stale_ids)
 
     async def create_session(
         self,
@@ -458,7 +502,7 @@ class SimulationSessionManager:
         persona: PersonaConfig | None = None,
     ) -> SimulationSession:
         """Create a new simulation session."""
-        # Fetch website context if persona has a URL
+        # Fetch website context if persona has a URL (outside lock for performance)
         if persona and persona.company_url and not persona.company_context:
             persona.company_context = await fetch_website_context(persona.company_url)
 
@@ -468,7 +512,10 @@ class SimulationSessionManager:
             persona=persona,
         )
         await session.start()
-        self._sessions[session_id] = session
+
+        async with self._lock:
+            self._sessions[session_id] = session
+
         logger.info(f"Created simulation session {session_id}")
         return session
 
@@ -497,10 +544,11 @@ class SimulationSessionManager:
 
     async def close_session(self, session_id: str):
         """Close and remove a simulation session."""
-        if session_id in self._sessions:
-            session = self._sessions.pop(session_id)
-            await session.stop()
-            logger.info(f"Closed simulation session {session_id}")
+        async with self._lock:
+            if session_id in self._sessions:
+                session = self._sessions.pop(session_id)
+                await session.stop()
+                logger.info(f"Closed simulation session {session_id}")
 
     async def update_prompt(self, session_id: str, new_prompt: str) -> None:
         """Update the system prompt for a session.
