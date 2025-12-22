@@ -339,8 +339,59 @@ class SimulationSession:
         self._introduction_sent = False
 
 
+def is_safe_url(url: str) -> bool:
+    """Check if a URL is safe to fetch (not localhost/internal)."""
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+
+        # Must be http or https
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        # Must have a host
+        if not parsed.hostname:
+            return False
+
+        hostname = parsed.hostname.lower()
+
+        # Block localhost variations
+        if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+
+        # Block common internal hostnames
+        if hostname.endswith(".local") or hostname.endswith(".internal"):
+            return False
+
+        # Try to parse as IP and block private/reserved ranges
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                return False
+            # Block cloud metadata endpoints
+            if str(ip).startswith("169.254."):
+                return False
+        except ValueError:
+            # Not an IP address, that's fine
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
 async def fetch_website_context(url: str) -> str:
-    """Fetch and extract relevant context from a website."""
+    """Fetch and extract relevant context from a website.
+
+    Includes SSRF protection to block internal/localhost URLs.
+    """
+    # Validate URL to prevent SSRF
+    if not is_safe_url(url):
+        logger.warning(f"Blocked unsafe URL: {url}")
+        return "(URL blocked: only public HTTP/HTTPS URLs are allowed)"
+
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(url)
