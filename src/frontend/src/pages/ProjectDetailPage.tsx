@@ -550,13 +550,13 @@ export default function ProjectDetailPage() {
 
                   <div className="flex gap-2 ml-4">
                     <Link
-                      to={`/projects/${projectId}/simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
+                      to={`/projects/${projectId}/simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md"
                     >
                       Simulate
                     </Link>
                     <Link
-                      to={`/projects/${projectId}/auto-simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
+                      to={`/projects/${projectId}/auto-simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md"
                     >
                       Auto-Simulate

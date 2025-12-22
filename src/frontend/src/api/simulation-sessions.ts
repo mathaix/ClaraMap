@@ -69,6 +69,31 @@ export async function createSimulationSession(
 }
 
 /**
+ * Create a simulation session from an InterviewAgent.
+ * This is the PREFERRED method - reads from canonical InterviewAgent table.
+ */
+export async function createSimulationFromAgent(
+  agentId: string,
+  model?: SimulationModel
+): Promise<CreateSimulationResponse> {
+  const url = model
+    ? `${API_BASE}/from-agent/${agentId}?model=${model}`
+    : `${API_BASE}/from-agent/${agentId}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to create simulation: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * @deprecated Use createSimulationFromAgent instead.
  * Create a simulation session from an existing design session's blueprint.
  */
 export async function createSimulationFromDesignSession(
@@ -230,6 +255,35 @@ export async function createAutoSimulation(
 }
 
 /**
+ * Create an automated simulation from an InterviewAgent.
+ * This is the PREFERRED method - reads from canonical InterviewAgent table.
+ */
+export async function createAutoSimulationFromAgent(
+  agentId: string,
+  persona: PersonaConfig,
+  model?: SimulationModel
+): Promise<AutoSimulationResponse> {
+  const params = new URLSearchParams();
+  if (model) params.set('model', model);
+
+  const url = `${API_BASE}/auto/from-agent/${agentId}${params.toString() ? `?${params}` : ''}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(persona),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `Failed to create auto-simulation: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * @deprecated Use createAutoSimulationFromAgent instead.
  * Create an automated simulation from a design session's blueprint.
  */
 export async function createAutoSimulationFromDesignSession(

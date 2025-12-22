@@ -10,7 +10,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   createAutoSimulation,
-  createAutoSimulationFromDesignSession,
+  createAutoSimulationFromAgent,
   runAutoSimulation,
   deleteSimulation,
   SimulationModel,
@@ -40,7 +40,7 @@ Guidelines:
 export function AutomatedSimulationPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [searchParams] = useSearchParams();
-  const designSessionId = searchParams.get('designSessionId');
+  const agentId = searchParams.get('agentId');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Session state
@@ -80,23 +80,23 @@ export function AutomatedSimulationPage() {
     };
   }, [sessionId]);
 
-  // Load system prompt from design session if provided
+  // Load system prompt from agent if provided
   useEffect(() => {
-    async function loadDesignSession() {
-      if (!designSessionId) return;
+    async function loadAgent() {
+      if (!agentId) return;
 
       try {
         setIsLoading(true);
         // We'll create the session when starting, but could pre-fetch the prompt here
       } catch (err) {
-        console.error('Failed to load design session:', err);
+        console.error('Failed to load agent:', err);
       } finally {
         setIsLoading(false);
       }
     }
 
-    loadDesignSession();
-  }, [designSessionId]);
+    loadAgent();
+  }, [agentId]);
 
   const handleStartSimulation = useCallback(async () => {
     try {
@@ -106,9 +106,9 @@ export function AutomatedSimulationPage() {
 
       // Create the auto-simulation session
       let result;
-      if (designSessionId) {
-        result = await createAutoSimulationFromDesignSession(
-          designSessionId,
+      if (agentId) {
+        result = await createAutoSimulationFromAgent(
+          agentId,
           persona,
           selectedModel
         );
@@ -205,7 +205,7 @@ export function AutomatedSimulationPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [designSessionId, persona, systemPrompt, selectedModel, numTurns]);
+  }, [agentId, persona, systemPrompt, selectedModel, numTurns]);
 
   const handleReset = useCallback(() => {
     if (sessionId) {
@@ -358,8 +358,8 @@ export function AutomatedSimulationPage() {
             </div>
           </section>
 
-          {/* System Prompt (only if no design session) */}
-          {!designSessionId && (
+          {/* System Prompt (only if no agent specified) */}
+          {!agentId && (
             <section>
               <h3 className="text-sm font-medium text-gray-900 mb-3">Interview Prompt</h3>
               <textarea

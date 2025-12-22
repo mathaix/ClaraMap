@@ -7,7 +7,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   createSimulationSession,
-  createSimulationFromDesignSession,
+  createSimulationFromAgent,
   sendSimulationMessage,
   resetSimulation,
   getSimulationSession,
@@ -25,7 +25,7 @@ interface Message {
 export function SimulationPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [searchParams] = useSearchParams();
-  const designSessionId = searchParams.get('designSessionId');
+  const agentId = searchParams.get('agentId');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -46,9 +46,9 @@ export function SimulationPage() {
         setError(null);
 
         let result;
-        if (designSessionId) {
-          // Create from design session blueprint with selected model
-          result = await createSimulationFromDesignSession(designSessionId, selectedModel);
+        if (agentId) {
+          // Create from InterviewAgent with selected model (canonical source)
+          result = await createSimulationFromAgent(agentId, selectedModel);
         } else {
           // Create with default prompt and selected model
           result = await createSimulationSession({
@@ -70,7 +70,7 @@ export function SimulationPage() {
     }
 
     init();
-  }, [designSessionId, selectedModel]);
+  }, [agentId, selectedModel]);
 
   // Cleanup session on unmount
   useEffect(() => {
