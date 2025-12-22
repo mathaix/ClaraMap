@@ -8,9 +8,8 @@ import {
   useArchiveProject,
   useDeleteProject,
 } from '../hooks/useProjects'
-import { designSessionsApi } from '../api/design-sessions'
+import { interviewAgentsApi, type InterviewAgentResponse } from '../api/interview-agents'
 import type { ProjectStatus, ProjectUpdate } from '../types/project'
-import type { SessionStateResponse } from '../types/design-session'
 
 const statusStyles: Record<ProjectStatus, string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -29,16 +28,18 @@ export default function ProjectDetailPage() {
   const [editDescription, setEditDescription] = useState('')
   const [editStatus, setEditStatus] = useState<ProjectStatus>('draft')
   const [editTags, setEditTags] = useState('')
-  const [designSession, setDesignSession] = useState<SessionStateResponse | null>(null)
+  const [agents, setAgents] = useState<InterviewAgentResponse[]>([])
 
-  // Fetch design session to check if we have a blueprint
+  // Fetch interview agents for the project
   useEffect(() => {
     if (!projectId) return
-    designSessionsApi.getByProject(projectId).then(setDesignSession).catch(() => {})
+    interviewAgentsApi.listByProject(projectId)
+      .then((response) => setAgents(response.agents))
+      .catch(() => setAgents([]))
   }, [projectId])
 
-  // Check if we have agents in the blueprint (meaning simulation is available)
-  const hasBlueprint = (designSession?.blueprint_state?.agents?.length ?? 0) > 0
+  // Check if we have agents configured
+  const hasAgents = agents.length > 0
 
   const updateMutation = useUpdateProject()
   const archiveMutation = useArchiveProject()
@@ -283,7 +284,7 @@ export default function ProjectDetailPage() {
       <div className="mt-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Interview Agents</h3>
-          {!hasBlueprint && (
+          {!hasAgents && (
             <Link
               to={`/projects/${projectId}/design`}
               className="text-sm text-blue-600 hover:text-blue-700"
@@ -293,11 +294,11 @@ export default function ProjectDetailPage() {
           )}
         </div>
 
-        {hasBlueprint && designSession?.blueprint_state?.agents ? (
+        {hasAgents ? (
           <div className="space-y-4">
-            {designSession.blueprint_state.agents.map((agent, index) => (
+            {agents.map((agent) => (
               <div
-                key={agent.name || index}
+                key={agent.id}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
               >
                 <div className="flex items-start justify-between">
@@ -320,11 +321,21 @@ export default function ProjectDetailPage() {
                       </div>
                       <div>
                         <h4 className="font-semibold text-gray-900">{agent.name}</h4>
-                        {agent.tone && (
-                          <span className="text-xs text-gray-500 capitalize">
-                            {agent.tone} tone
+                        <div className="flex items-center gap-2">
+                          {agent.tone && (
+                            <span className="text-xs text-gray-500 capitalize">
+                              {agent.tone} tone
+                            </span>
+                          )}
+                          <span className={clsx(
+                            'text-xs px-1.5 py-0.5 rounded capitalize',
+                            agent.status === 'active' ? 'bg-green-100 text-green-700' :
+                            agent.status === 'archived' ? 'bg-gray-100 text-gray-600' :
+                            'bg-yellow-100 text-yellow-700'
+                          )}>
+                            {agent.status}
                           </span>
-                        )}
+                        </div>
                       </div>
                     </div>
 
@@ -353,20 +364,19 @@ export default function ProjectDetailPage() {
 
                   <div className="flex gap-2 ml-4">
                     <Link
-                      to={`/projects/${projectId}/simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      to={`/projects/${projectId}/simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md"
                     >
                       Simulate
                     </Link>
                     <Link
-                      to={`/projects/${projectId}/auto-simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      to={`/projects/${projectId}/auto-simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md"
                     >
                       Auto-Simulate
                     </Link>
                     <button
                       onClick={() => {
-                        // TODO: Implement assign interviews modal
                         alert(`Assign interviews to "${agent.name}" - Coming soon!`)
                       }}
                       className="px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200"
