@@ -47,6 +47,13 @@ class PersonaConfig:
 # Valid model options for simulation
 VALID_MODELS = {"sonnet", "haiku", "opus"}
 
+# Map friendly names to Claude SDK model identifiers
+MODEL_ID_MAP = {
+    "sonnet": "claude-sonnet-4-20250514",
+    "haiku": "claude-3-5-haiku-20241022",  # Claude 3.5 Haiku (fast model)
+    "opus": "claude-opus-4-20250514",
+}
+
 
 @dataclass
 class SimulationSession:
@@ -78,12 +85,15 @@ class SimulationSession:
         if self._running:
             return
 
+        # Convert friendly model name to full Claude SDK model identifier
+        model_id = MODEL_ID_MAP.get(self.model, MODEL_ID_MAP["sonnet"])
+
         # Create the Interview Agent
         interviewer_options = ClaudeAgentOptions(
             permission_mode="bypassPermissions",
             system_prompt=self.interviewer_prompt,
             allowed_tools=[],
-            model=self.model
+            model=model_id
         )
         self._interviewer_client = ClaudeSDKClient(options=interviewer_options)
         await self._interviewer_client.__aenter__()
@@ -91,11 +101,14 @@ class SimulationSession:
         # Create Simulated User if persona is configured
         if self.persona:
             simulated_user_prompt = self._build_simulated_user_prompt()
+            user_model_id = MODEL_ID_MAP.get(
+                settings.simulation_user_model, MODEL_ID_MAP["haiku"]
+            )
             user_options = ClaudeAgentOptions(
                 permission_mode="bypassPermissions",
                 system_prompt=simulated_user_prompt,
                 allowed_tools=[],
-                model=settings.simulation_user_model  # Use faster model for simulated user
+                model=user_model_id
             )
             self._simulated_user_client = ClaudeSDKClient(options=user_options)
             await self._simulated_user_client.__aenter__()

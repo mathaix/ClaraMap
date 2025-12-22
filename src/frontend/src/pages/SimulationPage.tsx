@@ -133,7 +133,14 @@ export function SimulationPage() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send message');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
+      // If session not found, prompt user to refresh
+      if (errorMessage.includes('Not Found')) {
+        setError('Session expired. Please refresh the page to start a new simulation.');
+        setSessionId(null);
+      } else {
+        setError(errorMessage);
+      }
       // Remove streaming message on error
       setMessages((prev) => prev.filter((msg) => msg.id !== assistantId));
     } finally {
