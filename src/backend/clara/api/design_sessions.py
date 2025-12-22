@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from clara.agents.design_assistant import AGUIEvent, session_manager
-from clara.db.models import DesignSession, DesignSessionStatus, DesignPhase
+from clara.db.models import DesignPhase, DesignSession, DesignSessionStatus
 from clara.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -209,7 +209,7 @@ async def delete_session(
 
     # Mark as abandoned in DB
     db_session.status = DesignSessionStatus.ABANDONED.value
-    db_session.updated_at = datetime.now(timezone.utc)
+    db_session.updated_at = datetime.now(UTC)
 
     # Close in-memory session (ignore errors if not in memory)
     try:
@@ -262,12 +262,14 @@ async def stream_message(
     messages.append({"role": "user", "content": request.message})
     db_session.messages = messages
     db_session.message_count = len(messages)
-    db_session.updated_at = datetime.now(timezone.utc)
+    db_session.updated_at = datetime.now(UTC)
     await db.commit()
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE events from the agent response."""
         assistant_content = ""
+        streaming_error = None
+
         try:
             async for event in session.send_message(request.message):
                 yield format_sse_event(event)
@@ -278,14 +280,16 @@ async def stream_message(
                     assistant_content += delta
 
         except Exception as e:
+            streaming_error = e
             logger.exception("Error streaming response")
             error_event = AGUIEvent(
                 type="ERROR",
-                data={"message": str(e)}
+                data={"message": str(e), "recoverable": True}
             )
             yield format_sse_event(error_event)
 
         # After streaming completes, persist assistant response and state
+        persistence_error = None
         try:
             async with session_manager._db_session_maker() as save_db:
                 result = await save_db.execute(
@@ -313,10 +317,22 @@ async def stream_message(
                         db_sess.goal_summary = tool_state.get("goal_summary")
                         db_sess.agent_capabilities = tool_state.get("agent_capabilities")
 
-                    db_sess.updated_at = datetime.now(timezone.utc)
+                    db_sess.updated_at = datetime.now(UTC)
                     await save_db.commit()
         except Exception as e:
+            persistence_error = e
             logger.exception(f"Failed to persist session state: {e}")
+
+        # Notify user if persistence failed (but streaming succeeded)
+        if persistence_error and not streaming_error:
+            warning_event = AGUIEvent(
+                type="WARNING",
+                data={
+                    "message": "Response received but failed to save. Please retry.",
+                    "code": "PERSISTENCE_FAILED"
+                }
+            )
+            yield format_sse_event(warning_event)
 
     return StreamingResponse(
         event_generator(),
