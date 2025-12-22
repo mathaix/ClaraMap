@@ -174,6 +174,7 @@ export interface SendMessageRequest {
 
 // Project-level agent info (from aggregation endpoint)
 export interface ProjectAgentInfo {
+  id: string;  // Agent ID (InterviewAgent.id)
   session_id: string;
   agent_index: number;
   name: string;
@@ -181,6 +182,7 @@ export interface ProjectAgentInfo {
   topics: string[];
   tone: string | null;
   system_prompt: string | null;
+  status: 'draft' | 'active' | 'archived';
   context_files: Array<{
     id: string;
     name: string;
@@ -193,7 +195,7 @@ export interface ProjectAgentInfo {
 export interface ProjectAgentsResponse {
   project_id: string;
   agents: ProjectAgentInfo[];
-  session_count: number;
+  agent_count: number;
 }
 
 // Chat Message Types

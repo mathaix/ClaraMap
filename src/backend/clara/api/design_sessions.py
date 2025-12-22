@@ -202,23 +202,34 @@ async def get_session_by_project(
     )
 
 
+class ContextFileInfo(BaseModel):
+    """Context file info for API responses."""
+    id: str
+    name: str
+    type: str
+    size: int
+    uploaded_at: str
+
+
 class ProjectAgentInfo(BaseModel):
-    """Agent info with session reference for project-level listing."""
-    session_id: str
+    """Agent info from InterviewAgent table (canonical source)."""
+    id: str  # InterviewAgent.id
+    session_id: str | None  # design_session_id
     agent_index: int
     name: str
     persona: str | None
     topics: list[str]
     tone: str | None
     system_prompt: str | None
-    context_files: list[dict] | None
+    status: str  # draft, active, archived
+    context_files: list[ContextFileInfo] | None
 
 
 class ProjectAgentsResponse(BaseModel):
-    """All agents for a project, aggregated from all sessions."""
+    """All agents for a project from InterviewAgent table."""
     project_id: str
     agents: list[ProjectAgentInfo]
-    session_count: int
+    agent_count: int
 
 
 @router.get("/project/{project_id}/agents", response_model=ProjectAgentsResponse)
@@ -226,41 +237,61 @@ async def get_project_agents(
     project_id: str,
     db: AsyncSession = Depends(get_db)
 ) -> ProjectAgentsResponse:
-    """Get all agents for a project, aggregated from all active sessions.
+    """Get all agents for a project from the InterviewAgent table.
 
-    Each agent includes a reference to its session for simulation/editing.
+    InterviewAgent is the canonical source of truth for agents.
+    Context files are fetched via the relationship to AgentContextFile.
     """
-    # Get ALL active sessions for this project
+    from clara.db.models import InterviewAgent, AgentContextFile
+
+    # Query InterviewAgent table directly (canonical source)
     result = await db.execute(
-        select(DesignSession)
-        .where(DesignSession.project_id == project_id)
-        .where(DesignSession.status == DesignSessionStatus.ACTIVE.value)
-        .order_by(DesignSession.created_at.asc())  # Oldest first for consistent ordering
+        select(InterviewAgent)
+        .where(InterviewAgent.project_id == project_id)
+        .order_by(InterviewAgent.created_at.asc())
     )
-    sessions = result.scalars().all()
+    agents = result.scalars().all()
 
     all_agents: list[ProjectAgentInfo] = []
 
-    for session in sessions:
-        blueprint_state = session.blueprint_state or {}
-        agents = blueprint_state.get("agents", [])
+    for idx, agent in enumerate(agents):
+        # Get context files for this agent
+        files_result = await db.execute(
+            select(AgentContextFile)
+            .where(AgentContextFile.agent_id == agent.id)
+            .where(AgentContextFile.deleted_at.is_(None))
+            .order_by(AgentContextFile.created_at.desc())
+        )
+        files = files_result.scalars().all()
 
-        for idx, agent in enumerate(agents):
-            all_agents.append(ProjectAgentInfo(
-                session_id=session.id,
-                agent_index=idx,
-                name=agent.get("name", f"Agent {len(all_agents) + 1}"),
-                persona=agent.get("persona"),
-                topics=agent.get("topics", []),
-                tone=agent.get("tone"),
-                system_prompt=agent.get("system_prompt"),
-                context_files=agent.get("context_files"),
-            ))
+        context_files = [
+            ContextFileInfo(
+                id=f.id,
+                name=f.original_filename,
+                type=f.mime_type,
+                size=f.file_size,
+                uploaded_at=f.created_at.isoformat() if f.created_at else "",
+            )
+            for f in files
+        ] if files else None
+
+        all_agents.append(ProjectAgentInfo(
+            id=agent.id,
+            session_id=agent.design_session_id,
+            agent_index=idx,
+            name=agent.name,
+            persona=agent.persona,
+            topics=agent.topics or [],
+            tone=agent.tone,
+            system_prompt=agent.system_prompt,
+            status=agent.status,
+            context_files=context_files,
+        ))
 
     return ProjectAgentsResponse(
         project_id=project_id,
         agents=all_agents,
-        session_count=len(sessions),
+        agent_count=len(all_agents),
     )
 
 

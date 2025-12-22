@@ -1,5 +1,6 @@
 /**
  * Context Files API client for agent file uploads.
+ * Uses agent_id (InterviewAgent canonical ID) for all operations.
  */
 
 const API_BASE = '/api/v1/context-files'
@@ -28,22 +29,16 @@ export interface ContextFileListResponse {
 export const contextFilesApi = {
   /**
    * Upload a file for an agent's context.
+   * @param agentId - The InterviewAgent ID
    */
-  async uploadFile(
-    sessionId: string,
-    agentIndex: number,
-    file: File
-  ): Promise<UploadResponse> {
+  async uploadFile(agentId: string, file: File): Promise<UploadResponse> {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await fetch(
-      `${API_BASE}/sessions/${sessionId}/agents/${agentIndex}/upload`,
-      {
-        method: 'POST',
-        body: formData,
-      }
-    )
+    const response = await fetch(`${API_BASE}/agents/${agentId}/upload`, {
+      method: 'POST',
+      body: formData,
+    })
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: 'Upload failed' }))
@@ -59,11 +54,10 @@ export const contextFilesApi = {
 
   /**
    * List all files for an agent.
+   * @param agentId - The InterviewAgent ID
    */
-  async listFiles(sessionId: string, agentIndex: number): Promise<ContextFileListResponse> {
-    const response = await fetch(
-      `${API_BASE}/sessions/${sessionId}/agents/${agentIndex}`
-    )
+  async listFiles(agentId: string): Promise<ContextFileListResponse> {
+    const response = await fetch(`${API_BASE}/agents/${agentId}`)
 
     if (!response.ok) {
       throw new Error('Failed to list files')
@@ -74,16 +68,13 @@ export const contextFilesApi = {
 
   /**
    * Delete a file.
+   * @param agentId - The InterviewAgent ID
+   * @param fileId - The file ID to delete
    */
-  async deleteFile(
-    sessionId: string,
-    agentIndex: number,
-    fileId: string
-  ): Promise<void> {
-    const response = await fetch(
-      `${API_BASE}/sessions/${sessionId}/agents/${agentIndex}/files/${fileId}`,
-      { method: 'DELETE' }
-    )
+  async deleteFile(agentId: string, fileId: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/agents/${agentId}/files/${fileId}`, {
+      method: 'DELETE',
+    })
 
     if (!response.ok) {
       throw new Error('Failed to delete file')
@@ -92,15 +83,14 @@ export const contextFilesApi = {
 
   /**
    * Get extracted content of a file.
+   * @param agentId - The InterviewAgent ID
+   * @param fileId - The file ID
    */
   async getContent(
-    sessionId: string,
-    agentIndex: number,
+    agentId: string,
     fileId: string
   ): Promise<{ content: string | null; extraction_status: string }> {
-    const response = await fetch(
-      `${API_BASE}/sessions/${sessionId}/agents/${agentIndex}/files/${fileId}/content`
-    )
+    const response = await fetch(`${API_BASE}/agents/${agentId}/files/${fileId}/content`)
 
     if (!response.ok) {
       throw new Error('Failed to get file content')

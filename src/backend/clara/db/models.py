@@ -245,29 +245,64 @@ class InterviewAgent(Base):
     )
 
 
+class ContextFileStatus(str, Enum):
+    """Status of a context file."""
+    PENDING = "pending"  # Upload started, validation pending
+    SCANNING = "scanning"  # Malware scan in progress
+    PROCESSING = "processing"  # Content extraction in progress
+    READY = "ready"  # File ready for use
+    FAILED = "failed"  # Validation or processing failed
+    INFECTED = "infected"  # Malware detected
+
+
 class AgentContextFile(Base):
-    """Context file uploaded for an interview agent."""
+    """Context file uploaded for an interview agent.
+
+    Files are sandboxed per project/agent and used to provide additional
+    context to the interview agent during sessions.
+    """
 
     __tablename__ = "agent_context_files"
     __table_args__ = (
         Index("ix_agent_context_files_agent_id", "agent_id"),
+        Index("ix_acf_status", "status"),
+        Index("ix_acf_checksum", "checksum"),
     )
 
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
-    agent_id: Mapped[str] = mapped_column(ForeignKey("interview_agents.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("interview_agents.id", ondelete="CASCADE"),
+        nullable=False
+    )
 
     # File metadata
-    filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(255), nullable=False)  # Sanitized name with UUID
+    file_extension: Mapped[str] = mapped_column(String(20), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False)  # bytes
 
-    # Storage
-    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Storage path (relative to upload_dir, sandboxed by project)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
 
-    # Timestamps
-    uploaded_at: Mapped[datetime] = mapped_column(
+    # Content for agent context (extracted text, max 50KB)
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    extraction_status: Mapped[str | None] = mapped_column(String(50))  # success, partial, failed, unsupported
+
+    # Security
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256
+    status: Mapped[str] = mapped_column(String(20), default=ContextFileStatus.PENDING.value)
+    status_message: Mapped[str | None] = mapped_column(String(500))  # Error details if failed
+
+    # Audit
+    uploaded_by: Mapped[str] = mapped_column(String(50), default="system")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Relationship
     agent: Mapped["InterviewAgent"] = relationship(back_populates="context_files")
@@ -415,69 +450,3 @@ class InterviewSession(Base):
     agent: Mapped["Agent"] = relationship(back_populates="interview_sessions")  # Deprecated
     interview_agent: Mapped[Optional["InterviewAgent"]] = relationship()  # New canonical agent
     interviewee: Mapped["Interviewee"] = relationship(back_populates="interview_sessions")
-
-
-class ContextFileStatus(str, Enum):
-    """Status of a context file."""
-    PENDING = "pending"  # Upload started, validation pending
-    SCANNING = "scanning"  # Malware scan in progress
-    PROCESSING = "processing"  # Content extraction in progress
-    READY = "ready"  # File ready for use
-    FAILED = "failed"  # Validation or processing failed
-    INFECTED = "infected"  # Malware detected
-
-
-class AgentContextFile(Base):
-    """Context files uploaded for interview agents.
-
-    Files are sandboxed per project/agent and used to provide additional
-    context to the interview agent during sessions.
-    """
-
-    __tablename__ = "agent_context_files"
-    __table_args__ = (
-        Index("ix_acf_session_agent", "session_id", "agent_index"),
-        Index("ix_acf_project", "project_id"),
-        Index("ix_acf_status", "status"),
-        Index("ix_acf_checksum", "checksum"),
-    )
-
-    id: Mapped[str] = mapped_column(String(50), primary_key=True)
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("design_sessions.id", ondelete="CASCADE"),
-        nullable=False
-    )
-    project_id: Mapped[str] = mapped_column(String(30), nullable=False)
-    agent_index: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # File metadata
-    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    stored_filename: Mapped[str] = mapped_column(String(255), nullable=False)  # Sanitized name with UUID
-    file_extension: Mapped[str] = mapped_column(String(20), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    file_size: Mapped[int] = mapped_column(Integer, nullable=False)  # bytes
-
-    # Storage path (relative to upload_dir, sandboxed by project)
-    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
-
-    # Content for agent context (extracted text, max 50KB)
-    extracted_text: Mapped[str | None] = mapped_column(Text)
-    extraction_status: Mapped[str | None] = mapped_column(String(50))  # success, partial, failed, unsupported
-
-    # Security
-    checksum: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256
-    status: Mapped[str] = mapped_column(String(20), default=ContextFileStatus.PENDING.value)
-    status_message: Mapped[str | None] = mapped_column(String(500))  # Error details if failed
-
-    # Audit
-    uploaded_by: Mapped[str] = mapped_column(String(50), default="system")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    # Relationship
-    session: Mapped["DesignSession"] = relationship()
