@@ -19,6 +19,7 @@ export function DesignAssistantPage() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
 
   const {
+    sessionId,
     isConnected,
     isLoading,
     isStreaming,
@@ -32,6 +33,9 @@ export function DesignAssistantPage() {
     disconnect,
     clearPendingUIComponent,
   } = useDesignSession({ projectId: projectId || 'default' });
+
+  // Check if we have agents in the blueprint (meaning simulation is available)
+  const hasBlueprint = (sessionState?.preview?.agent_count ?? 0) > 0;
 
   // Connect on mount
   useEffect(() => {
@@ -122,6 +126,15 @@ export function DesignAssistantPage() {
                 {isConnected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
+
+            {hasBlueprint && sessionId && (
+              <Link
+                to={`/projects/${projectId}/simulate?designSessionId=${sessionId}`}
+                className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+              >
+                Simulate Agent
+              </Link>
+            )}
 
             <button
               onClick={handleClose}

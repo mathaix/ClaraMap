@@ -194,16 +194,12 @@ export function useDesignSession({
   const disconnect = useCallback(async () => {
     if (!sessionId) return;
 
-    try {
-      await designSessionsApi.delete(sessionId);
-    } catch (err) {
-      console.error('Failed to delete session:', err);
-    } finally {
-      setSessionId(null);
-      setIsConnected(false);
-      setMessages([]);
-      setSessionState(null);
-    }
+    // Just clear local state - don't delete the session from DB
+    // Session persists in DB so user can resume later
+    setSessionId(null);
+    setIsConnected(false);
+    setMessages([]);
+    setSessionState(null);
   }, [sessionId]);
 
   const handleEvent = useCallback(

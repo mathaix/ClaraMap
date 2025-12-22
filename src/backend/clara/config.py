@@ -24,5 +24,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
 
+    # AI Models
+    simulation_interviewer_model: str = "sonnet"
+    simulation_user_model: str = "haiku"
+
 
 settings = Settings()

@@ -7,8 +7,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from clara.agents.design_assistant import session_manager
+from clara.agents.simulation_agent import simulation_manager
 from clara.api.design_sessions import router as design_sessions_router
 from clara.api.projects import router as projects_router
+from clara.api.simulation_sessions import router as simulation_sessions_router
 from clara.config import settings
 from clara.db import Base, engine
 
@@ -32,7 +34,11 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Clara API...")
     # Cleanup agent sessions
     await session_manager.close_all()
-    logger.info("Agent sessions closed")
+    logger.info("Design assistant sessions closed")
+    # Cleanup simulation sessions
+    for session_id in list(simulation_manager._sessions.keys()):
+        await simulation_manager.close_session(session_id)
+    logger.info("Simulation sessions closed")
 
 
 app = FastAPI(
@@ -63,6 +69,7 @@ async def log_requests(request: Request, call_next):
 # Include routers
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(design_sessions_router, prefix="/api/v1")
+app.include_router(simulation_sessions_router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import clsx from 'clsx'
@@ -8,7 +8,9 @@ import {
   useArchiveProject,
   useDeleteProject,
 } from '../hooks/useProjects'
+import { designSessionsApi } from '../api/design-sessions'
 import type { ProjectStatus, ProjectUpdate } from '../types/project'
+import type { SessionStateResponse } from '../types/design-session'
 
 const statusStyles: Record<ProjectStatus, string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -27,6 +29,16 @@ export default function ProjectDetailPage() {
   const [editDescription, setEditDescription] = useState('')
   const [editStatus, setEditStatus] = useState<ProjectStatus>('draft')
   const [editTags, setEditTags] = useState('')
+  const [designSession, setDesignSession] = useState<SessionStateResponse | null>(null)
+
+  // Fetch design session to check if we have a blueprint
+  useEffect(() => {
+    if (!projectId) return
+    designSessionsApi.getByProject(projectId).then(setDesignSession).catch(() => {})
+  }, [projectId])
+
+  // Check if we have agents in the blueprint (meaning simulation is available)
+  const hasBlueprint = (designSession?.blueprint_state?.agents?.length ?? 0) > 0
 
   const updateMutation = useUpdateProject()
   const archiveMutation = useArchiveProject()
@@ -264,6 +276,124 @@ export default function ProjectDetailPage() {
               )}
             </div>
           </>
+        )}
+      </div>
+
+      {/* Interview Agents Section */}
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">Interview Agents</h3>
+          {!hasBlueprint && (
+            <Link
+              to={`/projects/${projectId}/design`}
+              className="text-sm text-blue-600 hover:text-blue-700"
+            >
+              Configure agents in Design Blueprint →
+            </Link>
+          )}
+        </div>
+
+        {hasBlueprint && designSession?.blueprint_state?.agents ? (
+          <div className="space-y-4">
+            {designSession.blueprint_state.agents.map((agent, index) => (
+              <div
+                key={agent.name || index}
+                className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                        <svg
+                          className="w-5 h-5 text-blue-600"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                          />
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-gray-900">{agent.name}</h4>
+                        {agent.tone && (
+                          <span className="text-xs text-gray-500 capitalize">
+                            {agent.tone} tone
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {agent.persona && (
+                      <p className="text-sm text-gray-600 mb-3">{agent.persona}</p>
+                    )}
+
+                    {agent.topics.length > 0 && (
+                      <div className="mb-3">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                          Topics
+                        </span>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {agent.topics.map((topic) => (
+                            <span
+                              key={topic}
+                              className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded"
+                            >
+                              {topic}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 ml-4">
+                    <Link
+                      to={`/projects/${projectId}/simulate?designSessionId=${designSession.session_id}&agentIndex=${index}`}
+                      className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md"
+                    >
+                      Simulate
+                    </Link>
+                    <button
+                      onClick={() => {
+                        // TODO: Implement assign interviews modal
+                        alert(`Assign interviews to "${agent.name}" - Coming soon!`)
+                      }}
+                      className="px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200"
+                    >
+                      Assign Interviews
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-gray-50 rounded-lg border border-gray-200 p-8 text-center">
+            <div className="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-3">
+              <svg
+                className="w-6 h-6 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                />
+              </svg>
+            </div>
+            <p className="text-gray-600 mb-2">No interview agents configured yet</p>
+            <p className="text-sm text-gray-500">
+              Use the Design Blueprint to create and configure interview agents for this project.
+            </p>
+          </div>
         )}
       </div>
     </div>
