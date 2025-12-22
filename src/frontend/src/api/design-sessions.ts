@@ -47,6 +47,17 @@ export async function deleteSession(sessionId: string): Promise<void> {
 }
 
 /**
+ * Get session by project ID (if exists).
+ */
+export async function getSessionByProject(projectId: string): Promise<SessionStateResponse | null> {
+  try {
+    return await apiRequest<SessionStateResponse>(`${BASE_URL}/project/${projectId}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse SSE event from raw text.
  */
 function parseSSEEvent(eventText: string): AGUIEvent | null {
@@ -138,6 +149,7 @@ export const designSessionsApi = {
   create: createSession,
   get: getSession,
   getFullSession,
+  getByProject: getSessionByProject,
   delete: deleteSession,
   streamMessage,
 };
