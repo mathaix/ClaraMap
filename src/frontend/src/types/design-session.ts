@@ -106,6 +106,7 @@ export interface DesignSessionState {
 // API Types
 export interface CreateSessionRequest {
   project_id: string;
+  add_agent?: boolean;
 }
 
 export interface CreateSessionResponse {
@@ -145,6 +146,14 @@ export interface SessionStateResponse {
       persona?: string;
       topics: string[];
       tone?: string;
+      system_prompt?: string;
+      context_files?: Array<{
+        id: string;
+        name: string;
+        type: string;
+        size: number;
+        uploaded_at: string;
+      }>;
     }>;
   };
   goal_summary: Record<string, unknown> | null;
@@ -161,6 +170,30 @@ export interface SessionStateResponse {
 
 export interface SendMessageRequest {
   message: string;
+}
+
+// Project-level agent info (from aggregation endpoint)
+export interface ProjectAgentInfo {
+  session_id: string;
+  agent_index: number;
+  name: string;
+  persona: string | null;
+  topics: string[];
+  tone: string | null;
+  system_prompt: string | null;
+  context_files: Array<{
+    id: string;
+    name: string;
+    type: string;
+    size: number;
+    uploaded_at: string;
+  }> | null;
+}
+
+export interface ProjectAgentsResponse {
+  project_id: string;
+  agents: ProjectAgentInfo[];
+  session_count: number;
 }
 
 // Chat Message Types

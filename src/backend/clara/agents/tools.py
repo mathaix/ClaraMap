@@ -312,6 +312,17 @@ PromptEditorSchema = {
     "required": ["title", "prompt"],
 }
 
+GetAgentContextSchema = {
+    "type": "object",
+    "properties": {
+        "agent_index": {
+            "type": "integer",
+            "description": "Index of the agent to get context files for (0-based)",
+        },
+    },
+    "required": ["agent_index"],
+}
+
 
 def create_clara_tools(session_id: str):
     """Create MCP tools bound to a specific session.
@@ -508,12 +519,26 @@ def create_clara_tools(session_id: str):
             },
         }
 
+        # Add context files info for each agent
+        agents = state.get("agents", [])
+        total_context_files = 0
+        for agent in agents:
+            context_files = agent.get("context_files", [])
+            if context_files:
+                blueprint["interview_agent"]["context_files"] = [
+                    {"id": f.get("id"), "name": f.get("name"), "type": f.get("type")}
+                    for f in context_files
+                ]
+                total_context_files += len(context_files)
+
         summary_parts = []
         if project.get("name"):
             summary_parts.append(f"Project: {project['name']}")
         summary_parts.append(f"Knowledge Areas: {len(state['entities'])}")
         if agent_caps.get("role"):
             summary_parts.append(f"Interviewer: {agent_caps['role']}")
+        if total_context_files > 0:
+            summary_parts.append(f"Context Files: {total_context_files}")
 
         blueprint_json = json.dumps(blueprint, indent=2)
         summary = ", ".join(summary_parts)
@@ -810,6 +835,99 @@ def create_clara_tools(session_id: str):
             }]
         }
 
+    @tool(
+        "get_agent_context",
+        "Get uploaded context files content for an interview agent",
+        GetAgentContextSchema
+    )
+    async def get_agent_context_tool(args: dict) -> dict[str, Any]:
+        """Retrieve the extracted text from context files uploaded for an agent.
+
+        This allows the interview agent's system prompt to reference uploaded
+        documents like organization charts, process docs, or policy files.
+        """
+        from sqlalchemy import select
+
+        from clara.db.models import AgentContextFile
+        from clara.db.session import async_session_maker
+
+        state = get_session_state(session_id)
+        agent_index = args["agent_index"]
+
+        # Get agents list and validate index
+        agents = state.get("agents", [])
+        if agent_index < 0 or agent_index >= len(agents):
+            msg = f"Error: Invalid agent index {agent_index}. "
+            msg += f"Only {len(agents)} agents configured."
+            return {
+                "content": [{"type": "text", "text": msg}],
+                "isError": True
+            }
+
+        agent = agents[agent_index]
+        agent_name = agent.get("name", f"Agent {agent_index}")
+        context_files_meta = agent.get("context_files", [])
+
+        if not context_files_meta:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"No context files uploaded for agent '{agent_name}'"
+                }]
+            }
+
+        # Fetch extracted text from database
+        file_ids = [f["id"] for f in context_files_meta if f.get("id")]
+
+        try:
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(AgentContextFile)
+                    .where(AgentContextFile.id.in_(file_ids))
+                    .where(AgentContextFile.deleted_at.is_(None))
+                )
+                files = result.scalars().all()
+
+                context_parts = []
+                for f in files:
+                    if f.extracted_text and f.extraction_status == "success":
+                        context_parts.append(
+                            f"## {f.original_filename}\n\n{f.extracted_text}"
+                        )
+                    elif f.extraction_status == "partial":
+                        context_parts.append(
+                            f"## {f.original_filename} (truncated)\n\n{f.extracted_text}"
+                        )
+                    else:
+                        context_parts.append(
+                            f"## {f.original_filename}\n\n[Content could not be extracted]"
+                        )
+
+                combined = "\n\n---\n\n".join(context_parts) if context_parts else ""
+
+                logger.info(
+                    f"[{session_id}] Fetched {len(files)} context files "
+                    f"for agent {agent_index}"
+                )
+
+                if combined:
+                    result_text = f"Context files for agent '{agent_name}':"
+                    result_text += f"\n\n{combined}"
+                else:
+                    result_text = "No extractable content in uploaded files."
+
+                return {"content": [{"type": "text", "text": result_text}]}
+
+        except Exception as e:
+            logger.warning(f"[{session_id}] Failed to fetch context files: {e}")
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error fetching context files: {str(e)}"
+                }],
+                "isError": True
+            }
+
     # Create the MCP server with all tools
     return create_sdk_mcp_server(
         name="clara",
@@ -828,6 +946,7 @@ def create_clara_tools(session_id: str):
             hydrate_phase3_tool,
             get_hydrated_prompt_tool,
             prompt_editor_tool,
+            get_agent_context_tool,
         ],
     )
 
@@ -847,4 +966,5 @@ CLARA_TOOL_NAMES = [
     "mcp__clara__hydrate_phase3",
     "mcp__clara__get_prompt",
     "mcp__clara__prompt_editor",
+    "mcp__clara__get_agent_context",
 ]

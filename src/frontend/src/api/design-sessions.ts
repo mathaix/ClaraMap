@@ -9,6 +9,7 @@ import type {
   SessionInfo,
   SessionStateResponse,
   AGUIEvent,
+  ProjectAgentsResponse,
 } from '../types/design-session';
 
 const BASE_URL = '/api/v1/design-sessions';
@@ -55,6 +56,13 @@ export async function getSessionByProject(projectId: string): Promise<SessionSta
   } catch {
     return null;
   }
+}
+
+/**
+ * Get all agents for a project, aggregated from all active sessions.
+ */
+export async function getProjectAgents(projectId: string): Promise<ProjectAgentsResponse> {
+  return apiRequest<ProjectAgentsResponse>(`${BASE_URL}/project/${projectId}/agents`);
 }
 
 /**
@@ -150,6 +158,7 @@ export const designSessionsApi = {
   get: getSession,
   getFullSession,
   getByProject: getSessionByProject,
+  getProjectAgents,
   delete: deleteSession,
   streamMessage,
 };
