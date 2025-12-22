@@ -32,6 +32,12 @@ dev = [
     "aiosqlite>=0.20.0",
     "greenlet>=3.0.0",
 ]
+# Optional dependencies for content extraction from uploaded files
+extraction = [
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

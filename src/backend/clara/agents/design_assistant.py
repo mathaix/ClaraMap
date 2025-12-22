@@ -265,11 +265,13 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                     "First call mcp__clara__get_prompt to get hydrated instructions. "
                     "This agent MUST use mcp__clara__ask to collect user input before building. "
                     "It should NOT build entities/agents until user confirms via ask tool responses. "
-                    "Use mcp__clara__prompt_editor to show generated prompts for user editing."
+                    "Use mcp__clara__prompt_editor to show generated prompts for user editing. "
+                    "Use mcp__clara__get_agent_context to access uploaded context files."
                 ),
                 tools=["mcp__clara__project", "mcp__clara__entity", "mcp__clara__agent",
                        "mcp__clara__ask", "mcp__clara__preview", "mcp__clara__phase",
-                       "mcp__clara__get_prompt", "mcp__clara__prompt_editor"],
+                       "mcp__clara__get_prompt", "mcp__clara__prompt_editor",
+                       "mcp__clara__get_agent_context"],
                 prompt=phase3_prompt,
                 model="sonnet"
             ),
@@ -584,12 +586,48 @@ class DesignAssistantManager:
     async def get_or_create_session(
         self,
         session_id: str,
-        project_id: str
+        project_id: str,
+        initial_blueprint_state: dict | None = None
     ) -> DesignAssistantSession:
-        """Get an existing session or create a new one."""
+        """Get an existing session or create a new one.
+
+        Args:
+            session_id: The session ID
+            project_id: The project ID
+            initial_blueprint_state: Optional blueprint state to initialize with
+                (used for add-agent mode to preserve existing agents)
+        """
         if session_id not in self._sessions:
             session = DesignAssistantSession(session_id, project_id)
             await session.start()
+
+            # If initial blueprint state provided, populate the tools state
+            if initial_blueprint_state:
+                tool_state = get_session_state(session_id)
+                tool_state["project"] = initial_blueprint_state.get("project")
+                tool_state["entities"] = initial_blueprint_state.get("entities", [])
+                tool_state["agents"] = initial_blueprint_state.get("agents", [])
+                tool_state["phase"] = DesignPhase.AGENT_CONFIGURATION.value
+
+                # Update session state to reflect the blueprint
+                if initial_blueprint_state.get("project"):
+                    proj = initial_blueprint_state["project"]
+                    session.state.blueprint_preview.project_name = proj.get("name")
+                    session.state.blueprint_preview.project_type = proj.get("type")
+                    session.state.inferred_domain = proj.get("domain")
+                session.state.blueprint_preview.agent_count = len(
+                    initial_blueprint_state.get("agents", [])
+                )
+                session.state.blueprint_preview.entity_types = [
+                    e.get("name") for e in initial_blueprint_state.get("entities", [])
+                ]
+                session.state.phase = DesignPhase.AGENT_CONFIGURATION
+
+                logger.info(
+                    f"Initialized session {session_id} with existing blueprint "
+                    f"({len(initial_blueprint_state.get('agents', []))} agents)"
+                )
+
             self._sessions[session_id] = session
         return self._sessions[session_id]
 

@@ -506,6 +506,23 @@ def extract_company_name_from_url(url: str) -> str:
         return "the company"
 
 
+def _get_anthropic_client() -> anthropic.Anthropic:
+    """Get an Anthropic client using centralized configuration.
+
+    Uses settings.anthropic_api_key if configured, otherwise falls back
+    to the ANTHROPIC_API_KEY environment variable.
+
+    Raises:
+        ValueError: If no API key is available
+    """
+    api_key = settings.anthropic_api_key
+    if api_key:
+        return anthropic.Anthropic(api_key=api_key)
+    # Let the client use ANTHROPIC_API_KEY env var (default behavior)
+    # This will raise AuthenticationError if not set
+    return anthropic.Anthropic()
+
+
 async def search_company_products(url: str, role: str | None = None) -> str:
     """Use web search to gather information about a company's products.
 
@@ -535,7 +552,7 @@ async def search_company_products(url: str, role: str | None = None) -> str:
     logger.info(f"Searching for company products: {search_query}")
 
     try:
-        client = anthropic.Anthropic()
+        client = _get_anthropic_client()
 
         # Build the research prompt
         focus_item = ""
@@ -554,9 +571,9 @@ Focus on:
 Provide a detailed summary that would help someone understand what it's like \
 to work at this company in a product/technical role."""
 
-        # Use Claude with web search tool
+        # Use Claude with web search tool (model from config)
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=settings.web_search_model,
             max_tokens=2048,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": research_prompt}],
@@ -569,17 +586,22 @@ to work at this company in a product/technical role."""
                 result_text += block.text
 
         if result_text:
-            logger.info(f"Successfully gathered company context via web search for {company_name}")
+            logger.info(
+                f"Successfully gathered company context via web search for {company_name}"
+            )
             return result_text
 
         return f"(Could not find detailed product information for {company_name})"
 
+    except anthropic.AuthenticationError as e:
+        logger.error(f"Anthropic authentication failed: {e}")
+        return "(Web search unavailable: API key not configured)"
     except anthropic.APIError as e:
         logger.warning(f"Anthropic API error during web search: {e}")
-        return f"(Web search unavailable: {e})"
+        return "(Web search temporarily unavailable)"
     except Exception as e:
-        logger.warning(f"Error during company product search: {e}")
-        return f"(Could not search for company products: {e})"
+        logger.exception(f"Unexpected error during company product search: {type(e).__name__}")
+        return "(Could not search for company products)"
 
 
 async def gather_company_context(url: str, role: str | None = None) -> str:
