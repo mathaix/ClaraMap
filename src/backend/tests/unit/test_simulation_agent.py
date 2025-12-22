@@ -11,6 +11,7 @@ from clara.agents.simulation_agent import (
     AGUIEvent,
     SESSION_TTL_MINUTES,
     MAX_MESSAGE_HISTORY,
+    is_safe_url,
 )
 
 
@@ -271,3 +272,75 @@ class TestMessageHistoryLimit:
     def test_session_ttl_constant(self):
         """Test that SESSION_TTL_MINUTES is set."""
         assert SESSION_TTL_MINUTES == 60
+
+
+class TestSSRFProtection:
+    """Tests for SSRF protection in URL validation."""
+
+    def test_allows_valid_https_url(self):
+        """Test that valid HTTPS URLs are allowed."""
+        assert is_safe_url("https://example.com") is True
+        assert is_safe_url("https://www.google.com/search?q=test") is True
+
+    def test_allows_valid_http_url(self):
+        """Test that valid HTTP URLs are allowed."""
+        assert is_safe_url("http://example.com") is True
+
+    def test_blocks_localhost(self):
+        """Test that localhost URLs are blocked."""
+        assert is_safe_url("http://localhost") is False
+        assert is_safe_url("http://localhost:8080") is False
+        assert is_safe_url("https://localhost/path") is False
+
+    def test_blocks_loopback_ip(self):
+        """Test that 127.0.0.1 is blocked."""
+        assert is_safe_url("http://127.0.0.1") is False
+        assert is_safe_url("http://127.0.0.1:3000") is False
+        assert is_safe_url("https://127.0.0.1/api") is False
+
+    def test_blocks_ipv6_loopback(self):
+        """Test that IPv6 loopback is blocked."""
+        assert is_safe_url("http://[::1]") is False
+
+    def test_blocks_zero_ip(self):
+        """Test that 0.0.0.0 is blocked."""
+        assert is_safe_url("http://0.0.0.0") is False
+        assert is_safe_url("http://0.0.0.0:5000") is False
+
+    def test_blocks_private_ip_ranges(self):
+        """Test that private IP ranges are blocked."""
+        # 10.x.x.x
+        assert is_safe_url("http://10.0.0.1") is False
+        assert is_safe_url("http://10.255.255.255") is False
+        # 172.16.x.x - 172.31.x.x
+        assert is_safe_url("http://172.16.0.1") is False
+        assert is_safe_url("http://172.31.255.255") is False
+        # 192.168.x.x
+        assert is_safe_url("http://192.168.1.1") is False
+        assert is_safe_url("http://192.168.0.100") is False
+
+    def test_blocks_cloud_metadata_endpoints(self):
+        """Test that cloud metadata endpoints are blocked."""
+        assert is_safe_url("http://169.254.169.254") is False
+        assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_blocks_internal_hostnames(self):
+        """Test that .local and .internal hostnames are blocked."""
+        assert is_safe_url("http://myservice.local") is False
+        assert is_safe_url("http://database.internal") is False
+
+    def test_blocks_non_http_schemes(self):
+        """Test that non-HTTP schemes are blocked."""
+        assert is_safe_url("ftp://example.com") is False
+        assert is_safe_url("file:///etc/passwd") is False
+        assert is_safe_url("javascript:alert(1)") is False
+
+    def test_blocks_missing_host(self):
+        """Test that URLs without host are blocked."""
+        assert is_safe_url("http://") is False
+        assert is_safe_url("https://") is False
+
+    def test_blocks_invalid_urls(self):
+        """Test that invalid URLs are blocked."""
+        assert is_safe_url("not-a-url") is False
+        assert is_safe_url("") is False
