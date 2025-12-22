@@ -12,13 +12,15 @@ from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from clara.agents.simulation_agent import AGUIEvent, simulation_manager
 from clara.db.models import DesignSession
 from clara.db.session import get_db
+from clara.security import InputSanitizer
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,13 @@ router = APIRouter(prefix="/simulation-sessions", tags=["simulation-sessions"])
 
 class CreateSimulationRequest(BaseModel):
     """Request to create a new simulation session."""
-    system_prompt: str
+    system_prompt: str = Field(..., min_length=1, max_length=50000)
     design_session_id: str | None = None  # Optional link to design session
+
+    @field_validator('system_prompt')
+    @classmethod
+    def sanitize_prompt(cls, v: str) -> str:
+        return InputSanitizer.sanitize_system_prompt(v)
 
 
 class CreateSimulationResponse(BaseModel):
@@ -39,12 +46,22 @@ class CreateSimulationResponse(BaseModel):
 
 class UpdatePromptRequest(BaseModel):
     """Request to update the system prompt."""
-    system_prompt: str
+    system_prompt: str = Field(..., min_length=1, max_length=50000)
+
+    @field_validator('system_prompt')
+    @classmethod
+    def sanitize_prompt(cls, v: str) -> str:
+        return InputSanitizer.sanitize_system_prompt(v)
 
 
 class SendMessageRequest(BaseModel):
     """Request to send a message to the simulation agent."""
-    message: str
+    message: str = Field(..., min_length=1, max_length=10000)
+
+    @field_validator('message')
+    @classmethod
+    def sanitize_message(cls, v: str) -> str:
+        return InputSanitizer.sanitize_message(v)
 
 
 class SimulationStateResponse(BaseModel):
@@ -52,6 +69,20 @@ class SimulationStateResponse(BaseModel):
     session_id: str
     system_prompt: str
     messages: list[dict]
+
+
+class BlueprintAgent(BaseModel):
+    """Validated agent from blueprint state."""
+    name: str | None = None
+    system_prompt: str | None = None
+    persona: str | None = None
+    tone: str | None = None
+    topics: list[str] = Field(default_factory=list)
+
+
+class BlueprintState(BaseModel):
+    """Validated blueprint state from design session."""
+    agents: list[BlueprintAgent] = Field(default_factory=list)
 
 
 def format_sse_event(event: AGUIEvent) -> str:
@@ -69,14 +100,16 @@ async def create_simulation(
 
     await simulation_manager.create_session(
         session_id=session_id,
-        system_prompt=request.system_prompt,
+        interviewer_prompt=request.system_prompt,
     )
 
     logger.info(f"Created simulation session {session_id}")
 
+    prompt = request.system_prompt
+    preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
     return CreateSimulationResponse(
         session_id=session_id,
-        system_prompt_preview=request.system_prompt[:200] + "..." if len(request.system_prompt) > 200 else request.system_prompt,
+        system_prompt_preview=preview,
     )
 
 
@@ -86,28 +119,38 @@ async def create_simulation_from_design_session(
     db: AsyncSession = Depends(get_db),
 ) -> CreateSimulationResponse:
     """Create a simulation session using the system prompt from a design session's blueprint."""
-    # Get the design session
-    result = await db.execute(
-        select(DesignSession).where(DesignSession.id == design_session_id)
-    )
-    design_session = result.scalar_one_or_none()
+    try:
+        # Get the design session
+        result = await db.execute(
+            select(DesignSession).where(DesignSession.id == design_session_id)
+        )
+        design_session = result.scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.exception("Database error fetching design session")
+        raise HTTPException(status_code=500, detail="Database error")
 
     if not design_session:
         raise HTTPException(status_code=404, detail="Design session not found")
 
-    # Extract system prompt from blueprint_state
-    blueprint_state = design_session.blueprint_state or {}
-    agents = blueprint_state.get("agents", [])
+    # Validate blueprint_state using Pydantic model
+    try:
+        blueprint = BlueprintState.model_validate(design_session.blueprint_state or {})
+    except Exception as e:
+        logger.warning(f"Invalid blueprint state: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid blueprint configuration. Please re-run the design process."
+        )
 
-    if not agents:
+    if not blueprint.agents:
         raise HTTPException(
             status_code=400,
             detail="No agents configured in blueprint. Complete the design process first."
         )
 
     # Use the first agent's system prompt
-    agent = agents[0]
-    system_prompt = agent.get("system_prompt")
+    agent = blueprint.agents[0]
+    system_prompt = agent.system_prompt
 
     if not system_prompt:
         raise HTTPException(
@@ -115,19 +158,23 @@ async def create_simulation_from_design_session(
             detail="No system prompt found in agent configuration. Complete Phase 3 first."
         )
 
+    # Sanitize the system prompt
+    system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
+
     # Create simulation session
     session_id = str(uuid.uuid4())
 
     await simulation_manager.create_session(
         session_id=session_id,
-        system_prompt=system_prompt,
+        interviewer_prompt=system_prompt,
     )
 
     logger.info(f"Created simulation session {session_id} from design session {design_session_id}")
 
+    preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
     return CreateSimulationResponse(
         session_id=session_id,
-        system_prompt_preview=system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt,
+        system_prompt_preview=preview,
     )
 
 
@@ -141,7 +188,7 @@ async def get_simulation(session_id: str) -> SimulationStateResponse:
 
     return SimulationStateResponse(
         session_id=session.session_id,
-        system_prompt=session.system_prompt,
+        system_prompt=session.interviewer_prompt,
         messages=session.messages,
     )
 
@@ -205,7 +252,7 @@ async def stream_simulation_message(
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE events from the simulation response."""
         try:
-            async for event in session.send_message(request.message):
+            async for event in session.send_user_message(request.message):
                 yield format_sse_event(event)
         except Exception as e:
             logger.exception("Error streaming simulation response")

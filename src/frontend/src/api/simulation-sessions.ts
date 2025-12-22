@@ -117,23 +117,6 @@ export async function deleteSimulation(sessionId: string): Promise<void> {
 }
 
 /**
- * Stream a message to the simulation and get SSE response.
- */
-export function streamSimulationMessage(
-  sessionId: string,
-  _message: string
-): EventSource {
-  // We need to use fetch with POST for SSE, which requires a custom approach
-  // For now, we'll use the standard SSE pattern
-  const url = `${API_BASE}/${sessionId}/stream`;
-
-  // Create a custom event source that POSTs
-  const eventSource = new EventSource(url);
-
-  return eventSource;
-}
-
-/**
  * Send a message and stream the response using fetch.
  */
 export async function* sendSimulationMessage(

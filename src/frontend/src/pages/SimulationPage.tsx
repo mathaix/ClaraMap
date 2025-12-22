@@ -11,6 +11,7 @@ import {
   sendSimulationMessage,
   resetSimulation,
   getSimulationSession,
+  deleteSimulation,
 } from '../api/simulation-sessions';
 
 interface Message {
@@ -68,6 +69,18 @@ export function SimulationPage() {
     init();
   }, [designSessionId]);
 
+  // Cleanup session on unmount
+  useEffect(() => {
+    return () => {
+      if (sessionId) {
+        // Fire and forget - cleanup shouldn't block unmount
+        deleteSimulation(sessionId).catch(() => {
+          // Ignore errors on cleanup
+        });
+      }
+    };
+  }, [sessionId]);
+
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -94,15 +107,13 @@ export function SimulationPage() {
     ]);
 
     try {
-      let assistantContent = '';
-
       for await (const event of sendSimulationMessage(sessionId, userMessage.content)) {
         if (event.type === 'TEXT_MESSAGE_CONTENT' && event.delta) {
-          assistantContent += event.delta;
+          // Use functional update to avoid stale closure - append delta to current content
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantId
-                ? { ...msg, content: assistantContent }
+                ? { ...msg, content: msg.content + event.delta }
                 : msg
             )
           );

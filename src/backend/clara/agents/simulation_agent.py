@@ -10,12 +10,17 @@ The Interview Agent always introduces itself first when the simulation starts.
 import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timedelta
 
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
 logger = logging.getLogger(__name__)
+
+# Session TTL in minutes
+SESSION_TTL_MINUTES = 60
+# Maximum message history
+MAX_MESSAGE_HISTORY = 20
 
 
 @dataclass
@@ -49,6 +54,10 @@ class SimulationSession:
     interviewer_prompt: str  # The system prompt for the interview agent
     persona: PersonaConfig | None = None  # For auto-simulation mode
     messages: list[dict] = field(default_factory=list)
+
+    # Timestamps for TTL cleanup
+    created_at: datetime = field(default_factory=datetime.now)
+    last_activity: datetime = field(default_factory=datetime.now)
 
     # Internal state
     _interviewer_client: ClaudeSDKClient | None = field(default=None, repr=False)
@@ -101,7 +110,7 @@ class SimulationSession:
             return ""
 
         parts = [
-            f"You are playing the role of an interviewee in a discovery interview.",
+            "You are playing the role of an interviewee in a discovery interview.",
             f"Your role is: {self.persona.role}",
         ]
 
@@ -109,19 +118,21 @@ class SimulationSession:
             parts.append(f"Your name is: {self.persona.name}")
 
         if self.persona.experience_years:
-            parts.append(f"You have {self.persona.experience_years} years of experience in this role.")
+            years = self.persona.experience_years
+            parts.append(f"You have {years} years of experience in this role.")
 
         if self.persona.company_context:
-            parts.append(f"\nHere is context about your company/organization:\n{self.persona.company_context}")
+            ctx = self.persona.company_context
+            parts.append(f"\nHere is context about your company/organization:\n{ctx}")
 
         parts.extend([
             f"\nCommunication style: {self.persona.communication_style}",
             "\nInstructions:",
-            "- Respond naturally as someone in this role would during a discovery interview",
-            "- Draw on the company context to provide realistic, specific answers",
-            "- If asked about something not covered in the context, you can improvise realistic details",
-            "- Be helpful and engaged, but also realistic about challenges and concerns",
-            "- Keep responses conversational and appropriately detailed for the question",
+            "- Respond naturally as someone in this role would",
+            "- Draw on the company context to provide realistic answers",
+            "- If asked about something not in context, improvise realistic details",
+            "- Be helpful and engaged, but realistic about challenges",
+            "- Keep responses conversational and appropriately detailed",
             "- Don't break character or mention that you're an AI",
         ])
 
@@ -181,8 +192,15 @@ class SimulationSession:
         if not self._running or not self._interviewer_client:
             raise RuntimeError("Session not started")
 
+        # Update last activity
+        self.last_activity = datetime.now()
+
         # Store user message
         self.messages.append({"role": "user", "content": user_message})
+
+        # Limit message history
+        if len(self.messages) > MAX_MESSAGE_HISTORY:
+            self.messages = self.messages[-MAX_MESSAGE_HISTORY:]
 
         try:
             await self._interviewer_client.query(prompt=user_message)
@@ -221,7 +239,9 @@ class SimulationSession:
                 data={"message": str(e)}
             )
 
-    async def get_simulated_user_response(self, interviewer_message: str) -> AsyncGenerator[AGUIEvent, None]:
+    async def get_simulated_user_response(
+        self, interviewer_message: str
+    ) -> AsyncGenerator[AGUIEvent, None]:
         """Get a response from the simulated user to an interviewer message.
 
         This is used in auto-simulation mode where an AI plays the interviewee.
@@ -360,6 +380,26 @@ class SimulationSessionManager:
     def __init__(self):
         self._sessions: dict[str, SimulationSession] = {}
 
+    async def cleanup_stale_sessions(self) -> int:
+        """Remove sessions that have exceeded the TTL.
+
+        Returns:
+            Number of sessions cleaned up
+        """
+        cutoff = datetime.now() - timedelta(minutes=SESSION_TTL_MINUTES)
+        stale_ids = [
+            sid for sid, session in self._sessions.items()
+            if session.last_activity < cutoff
+        ]
+
+        for sid in stale_ids:
+            await self.close_session(sid)
+
+        if stale_ids:
+            logger.info(f"Cleaned up {len(stale_ids)} stale simulation sessions")
+
+        return len(stale_ids)
+
     async def create_session(
         self,
         session_id: str,
@@ -410,6 +450,19 @@ class SimulationSessionManager:
             session = self._sessions.pop(session_id)
             await session.stop()
             logger.info(f"Closed simulation session {session_id}")
+
+    async def update_prompt(self, session_id: str, new_prompt: str) -> None:
+        """Update the system prompt for a session.
+
+        This restarts the session with the new prompt and resets conversation history.
+        """
+        session = self._sessions.get(session_id)
+        if session:
+            await session.stop()
+            session.interviewer_prompt = new_prompt
+            session.reset()
+            await session.start()
+            logger.info(f"Updated prompt for simulation session {session_id}")
 
 
 # Global session manager
