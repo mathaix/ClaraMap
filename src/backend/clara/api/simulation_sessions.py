@@ -23,7 +23,7 @@ from clara.agents.simulation_agent import (
     PersonaConfig,
     simulation_manager,
 )
-from clara.db.models import DesignSession
+from clara.db.models import DesignSession, InterviewAgent
 from clara.db.session import get_db
 from clara.security import InputSanitizer
 
@@ -281,6 +281,145 @@ async def create_simulation_from_design_session(
         session_id=session_id,
         system_prompt_preview=preview,
         model=session.model,
+    )
+
+
+@router.post("/from-agent/{agent_id}", response_model=CreateSimulationResponse)
+async def create_simulation_from_agent(
+    agent_id: str,
+    model: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> CreateSimulationResponse:
+    """Create a simulation session using the system prompt from an InterviewAgent.
+
+    This is the PREFERRED method for creating simulations as it reads from the
+    canonical InterviewAgent table instead of embedded JSON in design sessions.
+    """
+    # Validate model if provided
+    if model is not None and model not in VALID_MODELS:
+        valid = ', '.join(sorted(VALID_MODELS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{model}'. Must be one of: {valid}"
+        )
+
+    try:
+        result = await db.execute(
+            select(InterviewAgent).where(InterviewAgent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.exception("Database error fetching interview agent")
+        raise HTTPException(status_code=500, detail="Database error")
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Interview agent not found")
+
+    system_prompt = agent.system_prompt
+
+    if not system_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="No system prompt found in agent. Complete the design process first."
+        )
+
+    # Sanitize the system prompt
+    system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
+
+    # Create simulation session
+    session_id = str(uuid.uuid4())
+
+    session = await simulation_manager.create_session(
+        session_id=session_id,
+        interviewer_prompt=system_prompt,
+        model=model,
+    )
+
+    logger.info(
+        f"Created simulation {session_id} from agent {agent_id} (model: {session.model})"
+    )
+
+    preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
+    return CreateSimulationResponse(
+        session_id=session_id,
+        system_prompt_preview=preview,
+        model=session.model,
+    )
+
+
+@router.post("/auto/from-agent/{agent_id}", response_model=AutoSimulationResponse)
+async def create_auto_simulation_from_agent(
+    agent_id: str,
+    persona: PersonaRequest,
+    model: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> AutoSimulationResponse:
+    """Create an automated simulation from an InterviewAgent.
+
+    This is the PREFERRED method for creating auto-simulations as it reads from
+    the canonical InterviewAgent table instead of embedded JSON in design sessions.
+    """
+    # Validate model if provided
+    if model is not None and model not in VALID_MODELS:
+        valid = ', '.join(sorted(VALID_MODELS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{model}'. Must be one of: {valid}"
+        )
+
+    try:
+        result = await db.execute(
+            select(InterviewAgent).where(InterviewAgent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.exception("Database error fetching interview agent")
+        raise HTTPException(status_code=500, detail="Database error")
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Interview agent not found")
+
+    system_prompt = agent.system_prompt
+
+    if not system_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="No system prompt found in agent. Complete the design process first."
+        )
+
+    system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
+
+    session_id = str(uuid.uuid4())
+
+    # Convert request persona to PersonaConfig
+    persona_config = PersonaConfig(
+        role=persona.role,
+        company_url=persona.company_url,
+        name=persona.name,
+        experience_years=persona.experience_years,
+        communication_style=persona.communication_style,
+    )
+
+    session = await simulation_manager.create_session(
+        session_id=session_id,
+        interviewer_prompt=system_prompt,
+        persona=persona_config,
+        model=model,
+    )
+
+    logger.info(
+        f"Created auto-simulation {session_id} from agent {agent_id} "
+        f"with persona: {persona_config.role}"
+    )
+
+    preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
+
+    return AutoSimulationResponse(
+        session_id=session_id,
+        system_prompt_preview=preview,
+        model=session.model,
+        persona_role=persona_config.role,
+        persona_name=persona_config.name,
     )
 
 

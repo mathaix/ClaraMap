@@ -179,14 +179,21 @@ class InterviewAgentStatus(str, Enum):
 class InterviewAgent(Base):
     """Interview Agent - a first-class AI interviewer entity.
 
-    This is the primary agent model that links to projects. Agents are created
-    via the Design Assistant and can be used across multiple interview sessions.
+    This is the PRIMARY and CANONICAL agent model that links to projects.
+    Agents are created via the Design Assistant and can be used across
+    multiple interview sessions.
+
+    NOTE: This replaces the embedded JSON agents in DesignSession.blueprint_state.
+    When agents are configured via the Design Assistant, they should be persisted
+    here. The blueprint_state.agents field is deprecated and kept only for
+    backward compatibility during migration.
     """
 
     __tablename__ = "interview_agents"
     __table_args__ = (
         Index("ix_interview_agents_project_id", "project_id"),
         Index("ix_interview_agents_status", "status"),
+        Index("ix_interview_agents_project_name", "project_id", "name", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
@@ -203,13 +210,22 @@ class InterviewAgent(Base):
 
     # Agent capabilities (from design session)
     capabilities: Mapped[dict | None] = mapped_column(JSON)
-    # Structure: {"role": str, "capabilities": list, "expertise_areas": list}
+    # Structure: {
+    #   "role": str,               # Agent role/title
+    #   "capabilities": list[str], # List of capabilities
+    #   "expertise_areas": list[str],  # List of expertise areas
+    #   "interaction_style": str,  # How the agent interacts
+    #   "focus_areas": list[str],  # Primary topics to focus on
+    # }
 
     # Status
     status: Mapped[str] = mapped_column(String(20), default=InterviewAgentStatus.DRAFT.value)
 
     # Provenance - which design session created this agent
-    design_session_id: Mapped[str | None] = mapped_column(ForeignKey("design_sessions.id"))
+    # SET NULL on delete so we don't lose agents if session is deleted
+    design_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("design_sessions.id", ondelete="SET NULL")
+    )
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -340,13 +356,32 @@ class DesignSessionPrompt(Base):
 
 
 class InterviewSession(Base):
-    """Interview Session - pairs an Agent with an Interviewee for a Project."""
+    """Interview Session - pairs an Agent with an Interviewee for a Project.
+
+    NOTE: This model is transitioning from the legacy Agent model to InterviewAgent.
+    - agent_id: Legacy FK to agents table (deprecated, kept for backward compat)
+    - interview_agent_id: New FK to interview_agents table (preferred)
+
+    New code should use interview_agent_id. The agent_id will be removed in a
+    future migration after all sessions are migrated.
+    """
 
     __tablename__ = "interview_sessions"
+    __table_args__ = (
+        Index("ix_interview_sessions_interview_agent_id", "interview_agent_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(30), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
+
+    # Legacy agent FK (deprecated - use interview_agent_id instead)
     agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), nullable=False)
+
+    # New agent FK - points to the canonical InterviewAgent model
+    interview_agent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("interview_agents.id", ondelete="SET NULL")
+    )
+
     interviewee_id: Mapped[str] = mapped_column(ForeignKey("interviewees.id"), nullable=False)
 
     status: Mapped[str] = mapped_column(String(20), default=InterviewSessionStatus.INVITED.value)
@@ -377,5 +412,6 @@ class InterviewSession(Base):
 
     # Relationships
     project: Mapped["Project"] = relationship(back_populates="interview_sessions")
-    agent: Mapped["Agent"] = relationship(back_populates="interview_sessions")
+    agent: Mapped["Agent"] = relationship(back_populates="interview_sessions")  # Deprecated
+    interview_agent: Mapped[Optional["InterviewAgent"]] = relationship()  # New canonical agent
     interviewee: Mapped["Interviewee"] = relationship(back_populates="interview_sessions")
