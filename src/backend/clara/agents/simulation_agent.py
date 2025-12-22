@@ -12,7 +12,9 @@ import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
+import anthropic
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
@@ -483,6 +485,148 @@ async def fetch_website_context(url: str) -> str:
         return f"(Could not fetch website content: {e})"
 
 
+def extract_company_name_from_url(url: str) -> str:
+    """Extract a clean company name from a URL."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+
+        # Remove common prefixes
+        hostname = hostname.lower()
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+
+        # Get the main domain part (before TLD)
+        parts = hostname.split(".")
+        if len(parts) >= 2:
+            # Return the main domain name (e.g., "facebook" from "facebook.com")
+            return parts[0].capitalize()
+        return hostname.capitalize()
+    except Exception:
+        return "the company"
+
+
+async def search_company_products(url: str, role: str | None = None) -> str:
+    """Use web search to gather information about a company's products.
+
+    Uses Claude with web search to understand what products/services
+    the company offers, which provides richer context for the persona.
+
+    Args:
+        url: The company's website URL
+        role: Optional role to focus the search (e.g., "Product Manager for Instagram")
+
+    Returns:
+        A summary of the company's products and services
+    """
+    company_name = extract_company_name_from_url(url)
+
+    # Build a focused search query
+    if role:
+        # Extract product name if role mentions it (e.g., "Product Manager for Instagram")
+        role_lower = role.lower()
+        search_query = f"{company_name} products services overview"
+        if "for " in role_lower:
+            product_focus = role.split("for ")[-1].strip()
+            search_query = f"{company_name} {product_focus} product features"
+    else:
+        search_query = f"{company_name} products services overview"
+
+    logger.info(f"Searching for company products: {search_query}")
+
+    try:
+        client = anthropic.Anthropic()
+
+        # Build the research prompt
+        focus_item = ""
+        if role and "for " in role.lower():
+            focus_item = f"\n5. Specifically focus on: {role.split('for ')[-1]}"
+
+        research_prompt = f"""Research {company_name} (website: {url}) and provide a \
+comprehensive summary of their products and services.
+
+Focus on:
+1. Main products and services offered
+2. Key features and capabilities
+3. Target customers/market
+4. Recent developments or notable features{focus_item}
+
+Provide a detailed summary that would help someone understand what it's like \
+to work at this company in a product/technical role."""
+
+        # Use Claude with web search tool
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2048,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": research_prompt}],
+        )
+
+        # Extract the text response
+        result_text = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                result_text += block.text
+
+        if result_text:
+            logger.info(f"Successfully gathered company context via web search for {company_name}")
+            return result_text
+
+        return f"(Could not find detailed product information for {company_name})"
+
+    except anthropic.APIError as e:
+        logger.warning(f"Anthropic API error during web search: {e}")
+        return f"(Web search unavailable: {e})"
+    except Exception as e:
+        logger.warning(f"Error during company product search: {e}")
+        return f"(Could not search for company products: {e})"
+
+
+async def gather_company_context(url: str, role: str | None = None) -> str:
+    """Gather comprehensive context about a company using web search and website scraping.
+
+    This combines web search results with direct website content for richer context.
+
+    Args:
+        url: The company's website URL
+        role: Optional role to focus the research
+
+    Returns:
+        Combined context about the company
+    """
+    # Run web search and website fetch in parallel
+    search_task = asyncio.create_task(search_company_products(url, role))
+    website_task = asyncio.create_task(fetch_website_context(url))
+
+    search_result, website_result = await asyncio.gather(
+        search_task, website_task, return_exceptions=True
+    )
+
+    # Handle any exceptions
+    if isinstance(search_result, Exception):
+        search_result = f"(Web search failed: {search_result})"
+    if isinstance(website_result, Exception):
+        website_result = f"(Website fetch failed: {website_result})"
+
+    # Combine results
+    company_name = extract_company_name_from_url(url)
+    context_parts = [f"## Company: {company_name}"]
+
+    if search_result and not search_result.startswith("("):
+        context_parts.append("\n### Product & Service Information (from web search)")
+        context_parts.append(search_result)
+
+    if website_result and not website_result.startswith("("):
+        context_parts.append("\n### Website Content")
+        context_parts.append(website_result[:2000])  # Limit website content
+
+    if len(context_parts) == 1:
+        # Neither source worked
+        return f"(Could not gather information about {company_name})"
+
+    return "\n".join(context_parts)
+
+
 class SimulationSessionManager:
     """Manages simulation sessions with thread-safe operations."""
 
@@ -532,9 +676,12 @@ class SimulationSessionManager:
         if model and model not in VALID_MODELS:
             raise ValueError(f"Invalid model '{model}'. Must be one of: {', '.join(VALID_MODELS)}")
 
-        # Fetch website context if persona has a URL (outside lock for performance)
+        # Gather company context using web search if persona has a URL
+        # (outside lock for performance)
         if persona and persona.company_url and not persona.company_context:
-            persona.company_context = await fetch_website_context(persona.company_url)
+            persona.company_context = await gather_company_context(
+                persona.company_url, persona.role
+            )
 
         session = SimulationSession(
             session_id=session_id,
@@ -562,9 +709,11 @@ class SimulationSessionManager:
         """Update the persona for a session."""
         session = self._sessions.get(session_id)
         if session:
-            # Fetch website context if needed
+            # Gather company context using web search if needed
             if persona.company_url and not persona.company_context:
-                persona.company_context = await fetch_website_context(persona.company_url)
+                persona.company_context = await gather_company_context(
+                    persona.company_url, persona.role
+                )
 
             # Need to restart session with new persona
             await session.stop()

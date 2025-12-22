@@ -3,6 +3,7 @@ import ProjectsPage from './pages/ProjectsPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
 import { DesignAssistantPage } from './pages/DesignAssistantPage'
 import { SimulationPage } from './pages/SimulationPage'
+import { AutomatedSimulationPage } from './pages/AutomatedSimulationPage'
 
 function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -21,14 +22,15 @@ function AppLayout({ children }: { children: React.ReactNode }) {
 
 function App() {
   const location = useLocation()
-  const isFullScreenPage = location.pathname.includes('/design') || location.pathname.includes('/simulate')
+  const isFullScreenPage = location.pathname.includes('/design') || location.pathname.includes('/simulate') || location.pathname.includes('/auto-simulate')
 
-  // Design Assistant and Simulation use full-screen layout
+  // Design Assistant and Simulation pages use full-screen layout
   if (isFullScreenPage) {
     return (
       <Routes>
         <Route path="/projects/:projectId/design" element={<DesignAssistantPage />} />
         <Route path="/projects/:projectId/simulate" element={<SimulationPage />} />
+        <Route path="/projects/:projectId/auto-simulate" element={<AutomatedSimulationPage />} />
       </Routes>
     )
   }
