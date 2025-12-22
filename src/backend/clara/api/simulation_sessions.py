@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from clara.agents.simulation_agent import AGUIEvent, simulation_manager
+from clara.agents.simulation_agent import VALID_MODELS, AGUIEvent, simulation_manager
 from clara.db.models import DesignSession
 from clara.db.session import get_db
 from clara.security import InputSanitizer
@@ -31,17 +31,30 @@ class CreateSimulationRequest(BaseModel):
     """Request to create a new simulation session."""
     system_prompt: str = Field(..., min_length=1, max_length=50000)
     design_session_id: str | None = None  # Optional link to design session
+    model: str | None = Field(
+        None,
+        description="Model to use: sonnet (default), haiku (fast), opus (capable)"
+    )
 
     @field_validator('system_prompt')
     @classmethod
     def sanitize_prompt(cls, v: str) -> str:
         return InputSanitizer.sanitize_system_prompt(v)
 
+    @field_validator('model')
+    @classmethod
+    def validate_model(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_MODELS:
+            valid = ', '.join(sorted(VALID_MODELS))
+            raise ValueError(f"Invalid model '{v}'. Must be one of: {valid}")
+        return v
+
 
 class CreateSimulationResponse(BaseModel):
     """Response after creating a simulation session."""
     session_id: str
     system_prompt_preview: str  # First 200 chars
+    model: str  # Model being used for this simulation
 
 
 class UpdatePromptRequest(BaseModel):
@@ -68,6 +81,7 @@ class SimulationStateResponse(BaseModel):
     """Current state of the simulation session."""
     session_id: str
     system_prompt: str
+    model: str
     messages: list[dict]
 
 
@@ -98,18 +112,20 @@ async def create_simulation(
     """Create a new simulation session with the given system prompt."""
     session_id = str(uuid.uuid4())
 
-    await simulation_manager.create_session(
+    session = await simulation_manager.create_session(
         session_id=session_id,
         interviewer_prompt=request.system_prompt,
+        model=request.model,
     )
 
-    logger.info(f"Created simulation session {session_id}")
+    logger.info(f"Created simulation session {session_id} with model {session.model}")
 
     prompt = request.system_prompt
     preview = prompt[:200] + "..." if len(prompt) > 200 else prompt
     return CreateSimulationResponse(
         session_id=session_id,
         system_prompt_preview=preview,
+        model=session.model,
     )
 
 
@@ -161,10 +177,10 @@ async def create_simulation_from_design_session(
     # Sanitize the system prompt
     system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
 
-    # Create simulation session
+    # Create simulation session (uses default model from config)
     session_id = str(uuid.uuid4())
 
-    await simulation_manager.create_session(
+    session = await simulation_manager.create_session(
         session_id=session_id,
         interviewer_prompt=system_prompt,
     )
@@ -175,6 +191,7 @@ async def create_simulation_from_design_session(
     return CreateSimulationResponse(
         session_id=session_id,
         system_prompt_preview=preview,
+        model=session.model,
     )
 
 
@@ -189,6 +206,7 @@ async def get_simulation(session_id: str) -> SimulationStateResponse:
     return SimulationStateResponse(
         session_id=session.session_id,
         system_prompt=session.interviewer_prompt,
+        model=session.model,
         messages=session.messages,
     )
 

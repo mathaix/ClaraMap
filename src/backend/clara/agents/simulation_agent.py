@@ -44,6 +44,10 @@ class PersonaConfig:
     communication_style: str = "professional"  # professional, casual, detailed, brief
 
 
+# Valid model options for simulation
+VALID_MODELS = {"sonnet", "haiku", "opus"}
+
+
 @dataclass
 class SimulationSession:
     """A simulation session for testing interview prompts.
@@ -55,6 +59,7 @@ class SimulationSession:
 
     session_id: str
     interviewer_prompt: str  # The system prompt for the interview agent
+    model: str = field(default_factory=lambda: settings.simulation_interviewer_model)
     persona: PersonaConfig | None = None  # For auto-simulation mode
     messages: list[dict] = field(default_factory=list)
 
@@ -78,7 +83,7 @@ class SimulationSession:
             permission_mode="bypassPermissions",
             system_prompt=self.interviewer_prompt,
             allowed_tools=[],
-            model=settings.simulation_interviewer_model
+            model=self.model
         )
         self._interviewer_client = ClaudeSDKClient(options=interviewer_options)
         await self._interviewer_client.__aenter__()
@@ -355,8 +360,8 @@ class SimulationSession:
 
 def is_safe_url(url: str) -> bool:
     """Check if a URL is safe to fetch (not localhost/internal)."""
-    from urllib.parse import urlparse
     import ipaddress
+    from urllib.parse import urlparse
 
     try:
         parsed = urlparse(url)
@@ -500,8 +505,20 @@ class SimulationSessionManager:
         session_id: str,
         interviewer_prompt: str,
         persona: PersonaConfig | None = None,
+        model: str | None = None,
     ) -> SimulationSession:
-        """Create a new simulation session."""
+        """Create a new simulation session.
+
+        Args:
+            session_id: Unique identifier for the session
+            interviewer_prompt: System prompt for the interview agent
+            persona: Optional persona config for auto-simulation mode
+            model: Optional model to use (sonnet, haiku, opus). Defaults to config setting.
+        """
+        # Validate model if provided
+        if model and model not in VALID_MODELS:
+            raise ValueError(f"Invalid model '{model}'. Must be one of: {', '.join(VALID_MODELS)}")
+
         # Fetch website context if persona has a URL (outside lock for performance)
         if persona and persona.company_url and not persona.company_context:
             persona.company_context = await fetch_website_context(persona.company_url)
@@ -509,6 +526,7 @@ class SimulationSessionManager:
         session = SimulationSession(
             session_id=session_id,
             interviewer_prompt=interviewer_prompt,
+            model=model or settings.simulation_interviewer_model,
             persona=persona,
         )
         await session.start()

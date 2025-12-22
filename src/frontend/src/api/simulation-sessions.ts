@@ -4,19 +4,24 @@
 
 const API_BASE = '/api/v1/simulation-sessions';
 
+export type SimulationModel = 'sonnet' | 'haiku' | 'opus';
+
 export interface CreateSimulationRequest {
   system_prompt: string;
   design_session_id?: string;
+  model?: SimulationModel;
 }
 
 export interface CreateSimulationResponse {
   session_id: string;
   system_prompt_preview: string;
+  model: SimulationModel;
 }
 
 export interface SimulationState {
   session_id: string;
   system_prompt: string;
+  model: SimulationModel;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
