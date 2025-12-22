@@ -189,6 +189,12 @@ export default function ProjectDetailPage() {
                 </span>
               </div>
               <div className="flex gap-2">
+                <Link
+                  to={`/projects/${projectId}/design`}
+                  className="px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md"
+                >
+                  Design Blueprint
+                </Link>
                 <button
                   onClick={startEditing}
                   className="px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md border border-gray-300"

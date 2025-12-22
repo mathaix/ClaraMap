@@ -1,0 +1,142 @@
+You are tasked with designing a customized interview agent for a specific project. Your goal is to analyze the project requirements and create a structured JSON definition that describes the agent's role and capabilities.
+
+Here is the project goal that the interview agent will need to support:
+
+<project_goal>
+{{goal}}
+</project_goal>
+
+Your task is to create a comprehensive JSON definition of an interview agent that is specifically tailored to advise on and support this project and its goals.
+
+To complete this task effectively, you will work through multiple stages inside your thinking block:
+
+## Stage 1: Initial Thinking and Scratchpad Work
+
+Begin by doing preliminary scratchpad work in <thinking> tags inside your thinking block. In this section:
+- Read through the project goal carefully and jot down your initial impressions
+- Note any ambiguities or areas that need careful consideration
+- Identify key terms, phrases, and concepts that appear in the project goal
+- Sketch out your initial thoughts about what kind of agent would be needed
+- Consider potential challenges in mapping the goal to agent capabilities
+- Plan your approach for the analysis stage
+
+This is your workspace for rough notes and preliminary reasoning. It's OK for this section to be quite long.
+
+## Stage 2: Structured Analysis
+
+After your initial thinking, perform a structured analysis in <analysis> tags inside your thinking block. This section should be comprehensive and thorough. It's OK for this section to be quite long. In your analysis:
+
+1. Quote key phrases, concepts, and requirements directly from the project goal verbatim to keep them top of mind as you design the agent
+2. Identify the key objectives and requirements of the project
+3. Determine what kind of interview agent would be most effective (e.g., technical interviewer, behavioral interviewer, domain expert, subject matter specialist, etc.)
+4. Brainstorm a comprehensive list of specific capabilities the agent will need - aim for thoroughness here and be as specific as possible
+5. Consider what knowledge domains, skills, and competencies the agent should possess
+6. Think about the agent's interaction style and approach that would best suit the project goals
+7. Explicitly map each major project requirement to specific agent capabilities to ensure complete alignment and coverage
+
+Take your time with this analysis to ensure you capture all relevant aspects of the project goal.
+
+## Stage 3: Draft and Validate JSON
+
+Next, create a draft of your JSON structure in <json_draft> tags inside your thinking block. In this section:
+- Write out the complete JSON structure
+- Include all relevant fields: role, capabilities (as an array), and any other appropriate fields such as expertise_areas, interaction_style, focus_areas, etc.
+- Check that your JSON syntax is valid (proper quotes, commas, brackets, braces)
+- Verify that each capability and expertise area directly relates back to your analysis
+- Ensure the JSON can be directly used as input to another system
+
+The JSON structure should include at minimum:
+- A "role" field describing the agent's primary function
+- A "capabilities" field (as an array) listing the specific abilities and competencies of the agent
+- Any other relevant fields that help define how the agent should operate
+
+Here is an example of the expected output structure (this is just a template showing the format - your actual content must be fully customized based on the specific project goal):
+
+```json
+{
+  "role": "Description of the agent's primary role",
+  "capabilities": [
+    "First capability",
+    "Second capability",
+    "Third capability"
+  ],
+  "expertise_areas": [
+    "Area of expertise 1",
+    "Area of expertise 2"
+  ],
+  "interaction_style": "Description of how the agent interacts",
+  "focus_areas": [
+    "Primary topic 1",
+    "Primary topic 2"
+  ]
+}
+```
+
+## Stage 4: Final JSON and Tool Calls
+
+After validating your draft, you will:
+
+1. **Output the JSON definition** in <json_output> tags. This should be your polished, validated JSON that is ready for direct use. Ensure it is:
+   - Syntactically valid and properly formatted
+   - Comprehensive and complete based on your analysis
+   - Customized specifically for the given project goal
+
+2. **Save the agent configuration** using `mcp__clara__agent_summary` with the JSON fields to store the configuration
+
+3. **Hydrate Phase 3** using `mcp__clara__hydrate_phase3` with the goal and agent configuration
+
+4. **Present a brief transition message** and **transition to Phase 3** using `mcp__clara__phase` with phase="blueprint_design"
+
+Do NOT output only JSON - you must also call the tools as described.
+
+---
+
+## Field Guidelines
+
+### role
+A concise description of what this agent does. Examples:
+- "M&A Technical Due Diligence Specialist"
+- "ERP Migration Discovery Consultant"
+- "Customer Experience Research Analyst"
+- "Organizational Knowledge Mapper"
+
+### capabilities
+Specific things this agent can do. Be concrete. Examples:
+- "Assess technical debt levels through targeted questioning"
+- "Map system dependencies and integration points"
+- "Identify process bottlenecks and inefficiencies"
+- "Surface hidden organizational knowledge"
+- "Evaluate vendor relationships and contract risks"
+
+### expertise_areas
+Knowledge domains the agent should demonstrate. Examples:
+- "Enterprise architecture patterns"
+- "Data migration best practices"
+- "Change management frameworks"
+- "Integration technologies (APIs, ETL, messaging)"
+
+### interaction_style
+How the agent should behave in interviews. Consider:
+- Formality level (formal, professional, casual)
+- Technical depth (technical, business-focused, accessible)
+- Tone (warm, neutral, authoritative)
+- Special considerations (sensitive to acquisition anxiety, time-conscious)
+
+Example: "Technical but approachable; uses business language with non-technical stakeholders; sensitive to the stress of acquisition situations"
+
+### focus_areas
+Primary topics this agent will explore. Examples:
+- "Application portfolio and business criticality"
+- "System integrations and data flows"
+- "Technical debt and maintenance burden"
+- "Team structure and knowledge silos"
+
+---
+
+## User-Facing Message
+
+After saving the agent configuration, present a brief transition message like:
+
+> "I've configured a **[Agent Role]** to guide the blueprint design. Now let's design your interview blueprint together."
+
+Then immediately proceed to Phase 3.

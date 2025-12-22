@@ -150,6 +150,97 @@ class Interviewee(Base):
     )
 
 
+class DesignPhase(str, Enum):
+    """Design session phases."""
+    GOAL_UNDERSTANDING = "goal_understanding"
+    AGENT_CONFIGURATION = "agent_configuration"
+    BLUEPRINT_DESIGN = "blueprint_design"
+    COMPLETE = "complete"
+
+
+class DesignSessionStatus(str, Enum):
+    """Design session statuses."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
+class DesignSession(Base):
+    """Design Session - tracks blueprint design conversation state.
+
+    Persists the full state of a design assistant session so users can
+    resume where they left off.
+    """
+
+    __tablename__ = "design_sessions"
+    __table_args__ = (
+        Index("ix_design_sessions_project_id", "project_id"),
+        Index("ix_design_sessions_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default=DesignSessionStatus.ACTIVE.value)
+
+    # Current phase in the design flow
+    phase: Mapped[str] = mapped_column(String(30), default=DesignPhase.GOAL_UNDERSTANDING.value)
+
+    # Conversation history - list of {role: "user"|"assistant", content: str}
+    messages: Mapped[list[dict]] = mapped_column(JSON, default=list)
+
+    # Blueprint state - accumulated from tool calls
+    blueprint_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Structure: {
+    #   "project": {"name": str, "type": str, "domain": str, "description": str},
+    #   "entities": [{"name": str, "attributes": list, "description": str}],
+    #   "agents": [{"name": str, "persona": str, "topics": list, "tone": str}],
+    # }
+
+    # Goal summary from Phase 1
+    goal_summary: Mapped[dict | None] = mapped_column(JSON)
+
+    # Agent capabilities from Phase 2
+    agent_capabilities: Mapped[dict | None] = mapped_column(JSON)
+
+    # Metrics
+    turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DesignSessionPrompt(Base):
+    """Hydrated prompt for a design session phase."""
+
+    __tablename__ = "design_session_prompts"
+    __table_args__ = (
+        Index("ix_design_session_prompts_session_phase", "session_id", "phase"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(50), ForeignKey("design_sessions.id"), nullable=False)
+    phase: Mapped[str] = mapped_column(String(30), nullable=False)
+    template_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    hydrated_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    context_data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationship
+    session: Mapped["DesignSession"] = relationship()
+
+
 class InterviewSession(Base):
     """Interview Session - pairs an Agent with an Interviewee for a Project."""
 
