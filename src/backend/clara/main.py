@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from clara.agents.design_assistant import session_manager
+from clara.agents.orchestrator import session_manager
 from clara.agents.simulation_agent import simulation_manager
 from clara.api.context_files import router as context_files_router
 from clara.api.design_sessions import router as design_sessions_router

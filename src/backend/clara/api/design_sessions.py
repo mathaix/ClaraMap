@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from clara.agents.design_assistant import AGUIEvent, session_manager
+from clara.agents.orchestrator import AGUIEvent, session_manager
 from clara.db.models import DesignPhase, DesignSession, DesignSessionStatus
 from clara.db.session import get_db
 
