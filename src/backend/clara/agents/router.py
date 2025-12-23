@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import anthropic
+from pydantic import ValidationError
 
+from clara.agents.structured_output import RouterDecisionModel
 from clara.config import settings
 from clara.security import InputSanitizer
 
@@ -29,6 +31,8 @@ ROUTER_MODEL_MAP = {
     "sonnet": "claude-sonnet-4-20250514",
     "opus": "claude-opus-4-20250514",
 }
+
+ROUTER_TOOL_NAME = "router_decision"
 
 DATA_TABLE_COLUMN_TYPES = {"text", "number", "enum", "date", "url"}
 
@@ -84,6 +88,17 @@ SELECTION_KEYWORDS = {
     "prefer",
 }
 
+INTERNAL_SELECTION_PHRASES = {
+    "project context",
+    "subject matter experts",
+    "key information needs",
+    "output requirements",
+    "constraints",
+    "constraints & preferences",
+}
+
+MAX_SELECTION_QUESTION_LEN = 160
+MAX_SELECTION_OPTION_LEN = 80
 SELECTION_MULTI_PATTERNS = [
     r"select all",
     r"choose all",
@@ -91,6 +106,11 @@ SELECTION_MULTI_PATTERNS = [
     r"all that apply",
     r"which ones",
     r"which of these apply",
+    r"what (?:key )?information",
+    r"what (?:areas|topics|aspects|issues|needs)",
+    r"which (?:areas|topics|aspects|issues|needs)",
+    r"are you focused on",
+    r"what are you focused on",
 ]
 
 SELECTION_SINGLE_PATTERNS = [
@@ -263,13 +283,15 @@ class UIRouter:
         phase: str | None,
         flow: str | None,
     ) -> RouterDecision | None:
-        """Call a small model to decide routing, fallback to heuristics on error."""
+        """Call a small model to decide routing using tool-forced JSON."""
         model_id = ROUTER_MODEL_MAP.get(self.model, self.model)
 
         try:
             if not self._client:
                 if settings.anthropic_api_key:
-                    self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+                    self._client = anthropic.AsyncAnthropic(
+                        api_key=settings.anthropic_api_key
+                    )
                 else:
                     self._client = anthropic.AsyncAnthropic()
 
@@ -279,18 +301,31 @@ class UIRouter:
             response = await self._client.messages.create(
                 model=model_id,
                 max_tokens=512,
+                max_retries=2,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
+                tools=[_router_tool_definition()],
+                tool_choice={"type": "tool", "name": ROUTER_TOOL_NAME},
             )
 
-            text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    text += block.text
+            tool_input = _extract_tool_input(response, ROUTER_TOOL_NAME)
+            if not isinstance(tool_input, dict):
+                return None
 
-            decision = _parse_router_json(text)
-            if decision:
-                return decision
+            try:
+                decision_model = RouterDecisionModel.model_validate(tool_input)
+            except ValidationError as exc:
+                logger.warning("Router decision invalid: %s", exc)
+                return None
+
+            # Convert Pydantic model to RouterDecision dataclass
+            return RouterDecision(
+                action=decision_model.action,
+                tool_name=decision_model.tool_name,
+                confidence=decision_model.confidence,
+                rationale=decision_model.rationale,
+                clarifying_question=decision_model.clarifying_question,
+            )
         except Exception as exc:  # pragma: no cover - network failure fallback
             logger.warning("Router model failed, using heuristics: %s", exc)
 
@@ -303,6 +338,20 @@ def _load_json_payload(raw: str) -> dict[str, Any] | None:
         return json.loads(raw.strip())
     except json.JSONDecodeError:
         return None
+
+
+def _extract_tool_input(response: Any, tool_name: str) -> dict[str, Any] | None:
+    if not response or not hasattr(response, "content"):
+        return None
+    for block in response.content:
+        if isinstance(block, dict):
+            if block.get("type") == "tool_use" and block.get("name") == tool_name:
+                return block.get("input")
+            continue
+        block_type = getattr(block, "type", None)
+        if block_type == "tool_use" and getattr(block, "name", None) == tool_name:
+            return getattr(block, "input", None)
+    return None
 
 
 def _normalize_table_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -367,7 +416,7 @@ def _normalize_process_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _router_system_prompt() -> str:
     return (
         "You are a router that decides when to switch from chat to a rich UI.\n"
-        "Return ONLY valid JSON with keys:\n"
+        "You must call the router_decision tool with keys:\n"
         "- action: tool|chat|clarify\n"
         "- tool_name: request_data_table|request_process_map|request_selection_list|null\n"
         "- confidence: number 0-1\n"
@@ -391,6 +440,53 @@ def _router_user_prompt(message: str, phase: str | None, flow: str | None) -> st
         context_parts.append(f"flow={flow}")
     context = f"Context: {', '.join(context_parts)}" if context_parts else "Context: none"
     return f"{context}\nUser message: {message}"
+
+
+def _router_tool_definition() -> dict[str, Any]:
+    return {
+        "name": ROUTER_TOOL_NAME,
+        "description": "Return a routing decision for Clara's UI selection.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["tool", "chat", "clarify"],
+                    "description": "Routing action to take.",
+                },
+                "tool_name": {
+                    "type": ["string", "null"],
+                    "enum": [
+                        "request_data_table",
+                        "request_process_map",
+                        "request_selection_list",
+                        None,
+                    ],
+                    "description": "Tool to use when action=tool.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Confidence score between 0 and 1.",
+                },
+                "params": {
+                    "type": ["object", "null"],
+                    "description": "Tool parameters if action=tool.",
+                    "additionalProperties": True,
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Short explanation for the decision.",
+                },
+                "clarifying_question": {
+                    "type": ["string", "null"],
+                    "description": "Question to ask when action=clarify.",
+                },
+            },
+            "required": ["action", "confidence", "rationale"],
+        },
+    }
 
 
 def _parse_router_json(text: str) -> RouterDecision | None:
@@ -728,10 +824,32 @@ def _extract_bulleted_items(message: str) -> list[str]:
     return items
 
 
+def strip_selection_list_from_text(message: str) -> str:
+    lines: list[str] = []
+    for line in message.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+            continue
+        if re.match(r"(?:[-*•]|\d+[.)])\s+", stripped):
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith(("for example", "for instance", "e.g.")):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def infer_selection_from_assistant_output(message: str) -> RouterDecision | None:
     """Infer a selection list from assistant output."""
     sanitized = InputSanitizer.sanitize_message(message)
     if not sanitized:
+        return None
+    if not _assistant_output_has_selection_prompt(sanitized):
+        return None
+
+    question = _extract_question(sanitized)
+    if question and len(question) > MAX_SELECTION_QUESTION_LEN:
         return None
 
     selection_items = _extract_selection_items(sanitized)
@@ -740,6 +858,7 @@ def infer_selection_from_assistant_output(message: str) -> RouterDecision | None
     if not selection_items:
         selection_items = _extract_bulleted_items(sanitized)
 
+    selection_items = _sanitize_selection_items(selection_items)
     if not (2 <= len(selection_items) <= 7):
         return None
 
@@ -754,6 +873,34 @@ def infer_selection_from_assistant_output(message: str) -> RouterDecision | None
     )
 
 
+def _assistant_output_has_selection_prompt(message: str) -> bool:
+    normalized = message.lower()
+    if any(keyword in normalized for keyword in SELECTION_KEYWORDS):
+        return True
+    if "for example" in normalized or "for instance" in normalized or "e.g." in normalized:
+        return True
+    if re.search(r"which (?:one|of these|of the following)", normalized):
+        return True
+    return False
+
+
+def _sanitize_selection_items(items: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for item in items:
+        value = _clean_list_item(item)
+        if not value or len(value) > MAX_SELECTION_OPTION_LEN:
+            continue
+        if _is_internal_option(value):
+            continue
+        cleaned.append(value)
+    return cleaned
+
+
+def _is_internal_option(label: str) -> bool:
+    normalized = label.lower()
+    return any(phrase in normalized for phrase in INTERNAL_SELECTION_PHRASES)
+
+
 def _selection_is_multi(normalized: str) -> bool:
     for pattern in SELECTION_MULTI_PATTERNS:
         if re.search(pattern, normalized, flags=re.IGNORECASE):
@@ -765,7 +912,8 @@ def _selection_is_multi(normalized: str) -> bool:
 
 
 def _selection_is_explicit(normalized: str) -> bool:
-    return any(keyword in normalized for keyword in {"options", "choices", "choose", "select", "pick"})
+    keywords = {"options", "choices", "choose", "select", "pick"}
+    return any(keyword in normalized for keyword in keywords)
 
 
 def _extract_question(message: str) -> str | None:

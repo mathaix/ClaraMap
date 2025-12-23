@@ -137,10 +137,22 @@ export async function* streamMessage(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let receivedEvent = false;
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch (err) {
+        if (receivedEvent) {
+          console.warn('Stream read error after events:', err);
+          break;
+        }
+        throw err;
+      }
+
+      const { done, value } = result;
 
       if (done) break;
 
@@ -155,6 +167,7 @@ export async function* streamMessage(
 
         const event = parseSSEEvent(eventText);
         if (event) {
+          receivedEvent = true;
           yield event;
         }
       }
@@ -164,6 +177,7 @@ export async function* streamMessage(
     if (buffer.trim()) {
       const event = parseSSEEvent(buffer);
       if (event) {
+        receivedEvent = true;
         yield event;
       }
     }

@@ -2,7 +2,7 @@
  * Debug panel showing agent activity - tool calls, phase transitions, hydrations.
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import clsx from 'clsx';
 import type { DebugEvent, DebugEventType } from '../../types/design-session';
 
@@ -35,6 +35,25 @@ function formatTime(date: Date): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function formatTimestamp(date: Date): string {
+  return date.toISOString();
+}
+
+function formatEventForClipboard(event: DebugEvent): string {
+  const header = `[${formatTimestamp(event.timestamp)}] ${event.type} | ${event.title}`;
+  if (!Object.keys(event.details).length) {
+    return header;
+  }
+  return `${header}\n${JSON.stringify(event.details, null, 2)}`;
+}
+
+function formatEventLog(events: DebugEvent[]): string {
+  if (!events.length) {
+    return '';
+  }
+  return events.map(formatEventForClipboard).join('\n\n');
 }
 
 function DebugEventItem({ event }: { event: DebugEvent }) {
@@ -96,6 +115,9 @@ function DebugEventItem({ event }: { event: DebugEvent }) {
 export function DebugPanel({ events, isOpen, onToggle }: DebugPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showRaw, setShowRaw] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const logText = useMemo(() => formatEventLog(events), [events]);
 
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
@@ -110,6 +132,22 @@ export function DebugPanel({ events, isOpen, onToggle }: DebugPanelProps) {
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
     setAutoScroll(isAtBottom);
+  };
+
+  useEffect(() => {
+    if (copyStatus === 'idle') return;
+    const timeoutId = window.setTimeout(() => setCopyStatus('idle'), 1500);
+    return () => window.clearTimeout(timeoutId);
+  }, [copyStatus]);
+
+  const handleCopy = async () => {
+    if (!logText) return;
+    try {
+      await navigator.clipboard.writeText(logText);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('error');
+    }
   };
 
   if (!isOpen) {
@@ -142,15 +180,52 @@ export function DebugPanel({ events, isOpen, onToggle }: DebugPanelProps) {
           <span className="text-sm font-semibold text-gray-900">Debug Panel</span>
           <span className="text-xs text-gray-500">({events.length} events)</span>
         </div>
-        <button
-          onClick={onToggle}
-          className="text-gray-400 hover:text-gray-600"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopy}
+            disabled={!events.length}
+            className={clsx(
+              'text-xs px-2 py-1 rounded border',
+              events.length
+                ? 'border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400'
+                : 'border-gray-200 text-gray-300 cursor-not-allowed'
+            )}
+          >
+            {copyStatus === 'copied'
+              ? 'Copied'
+              : copyStatus === 'error'
+              ? 'Copy failed'
+              : 'Copy log'}
+          </button>
+          <button
+            onClick={() => setShowRaw((prev) => !prev)}
+            className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:text-gray-900 hover:border-gray-400"
+          >
+            {showRaw ? 'Hide raw' : 'Raw'}
+          </button>
+          <button
+            onClick={onToggle}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
+
+      {showRaw && (
+        <div className="border-b border-gray-100 bg-gray-50 p-2">
+          <textarea
+            value={logText}
+            readOnly
+            spellCheck={false}
+            onFocus={(event) => event.currentTarget.select()}
+            className="w-full h-32 text-xs font-mono text-gray-900 bg-white border border-gray-200 rounded p-2"
+            placeholder="No events yet."
+          />
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex items-center gap-3 px-3 py-2 border-b border-gray-100 bg-gray-50">

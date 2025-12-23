@@ -170,6 +170,9 @@ export function useDesignSession({
 
     setIsLoading(true);
     setError(null);
+    clearDebugEvents();
+    setPendingUIComponent(null);
+    messageIdCounter.current = 0;
 
     try {
       const response = await designSessionsApi.create({
@@ -184,6 +187,7 @@ export function useDesignSession({
         // For addAgent, backend creates new session with copied blueprint state
         setSessionState(initialSessionState);
         setMessages([]);
+        messageIdCounter.current = 0;
       } else {
         // Existing session - load previous state
         const fullState = await designSessionsApi.getFullSession(response.session_id);
@@ -195,7 +199,7 @@ export function useDesignSession({
     } finally {
       setIsLoading(false);
     }
-  }, [projectId, addAgent, isConnected, restoreSessionState]);
+  }, [projectId, addAgent, isConnected, restoreSessionState, clearDebugEvents]);
 
   const disconnect = useCallback(async () => {
     if (!sessionId) return;
@@ -206,7 +210,11 @@ export function useDesignSession({
     setIsConnected(false);
     setMessages([]);
     setSessionState(null);
-  }, [sessionId]);
+    setPendingUIComponent(null);
+    setError(null);
+    clearDebugEvents();
+    messageIdCounter.current = 0;
+  }, [sessionId, clearDebugEvents]);
 
   const handleEvent = useCallback(
     (event: AGUIEvent, currentAssistantMessage: ChatMessage | null, prevPhase: DesignPhase | null) => {

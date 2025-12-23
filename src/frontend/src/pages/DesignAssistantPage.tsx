@@ -66,6 +66,11 @@ export function DesignAssistantPage() {
     sendMessage(`I chose: ${optionId}`);
   };
 
+  const handleQuickConfirm = (answer: 'Yes' | 'No') => {
+    clearPendingUIComponent();
+    sendMessage(answer);
+  };
+
   const handleTableSubmit = (payload: DataTableSubmission) => {
     clearPendingUIComponent();
     sendMessage(
@@ -313,6 +318,8 @@ export function DesignAssistantPage() {
                       key={message.id}
                       message={message}
                       onOptionSelect={handleOptionSelect}
+                      onQuickConfirm={handleQuickConfirm}
+                      isLastAssistantMessage={isLastAssistantMessage}
                       onTableSubmit={handleTableSubmit}
                       onProcessMapSubmit={handleProcessMapSubmit}
                       onPromptSave={handlePromptSave}
