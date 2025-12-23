@@ -202,23 +202,34 @@ async def get_session_by_project(
     )
 
 
+class ContextFileInfo(BaseModel):
+    """Context file info for API responses."""
+    id: str
+    name: str
+    type: str
+    size: int
+    uploaded_at: str
+
+
 class ProjectAgentInfo(BaseModel):
-    """Agent info with session reference for project-level listing."""
-    session_id: str
+    """Agent info from InterviewAgent table (canonical source)."""
+    id: str  # InterviewAgent.id
+    session_id: str | None  # design_session_id
     agent_index: int
     name: str
     persona: str | None
     topics: list[str]
     tone: str | None
     system_prompt: str | None
-    context_files: list[dict] | None
+    status: str  # draft, active, archived
+    context_files: list[ContextFileInfo] | None
 
 
 class ProjectAgentsResponse(BaseModel):
-    """All agents for a project, aggregated from all sessions."""
+    """All agents for a project from InterviewAgent table."""
     project_id: str
     agents: list[ProjectAgentInfo]
-    session_count: int
+    agent_count: int
 
 
 @router.get("/project/{project_id}/agents", response_model=ProjectAgentsResponse)
@@ -226,41 +237,156 @@ async def get_project_agents(
     project_id: str,
     db: AsyncSession = Depends(get_db)
 ) -> ProjectAgentsResponse:
-    """Get all agents for a project, aggregated from all active sessions.
+    """Get all agents for a project from the InterviewAgent table.
 
-    Each agent includes a reference to its session for simulation/editing.
+    InterviewAgent is the canonical source of truth for agents.
+    Context files are eagerly loaded via selectinload to avoid N+1.
     """
-    # Get ALL active sessions for this project
+    from sqlalchemy.orm import selectinload
+
+    from clara.db.models import InterviewAgent
+
+    # Query with eager loading of context_files (fixes N+1)
     result = await db.execute(
-        select(DesignSession)
-        .where(DesignSession.project_id == project_id)
-        .where(DesignSession.status == DesignSessionStatus.ACTIVE.value)
-        .order_by(DesignSession.created_at.asc())  # Oldest first for consistent ordering
+        select(InterviewAgent)
+        .where(InterviewAgent.project_id == project_id)
+        .options(selectinload(InterviewAgent.context_files))
+        .order_by(InterviewAgent.created_at.asc())
     )
-    sessions = result.scalars().all()
+    agents = result.scalars().all()
 
     all_agents: list[ProjectAgentInfo] = []
 
-    for session in sessions:
-        blueprint_state = session.blueprint_state or {}
-        agents = blueprint_state.get("agents", [])
+    for idx, agent in enumerate(agents):
+        # Filter out deleted files from eagerly loaded relationship
+        active_files = [f for f in agent.context_files if f.deleted_at is None]
 
-        for idx, agent in enumerate(agents):
-            all_agents.append(ProjectAgentInfo(
-                session_id=session.id,
-                agent_index=idx,
-                name=agent.get("name", f"Agent {len(all_agents) + 1}"),
-                persona=agent.get("persona"),
-                topics=agent.get("topics", []),
-                tone=agent.get("tone"),
-                system_prompt=agent.get("system_prompt"),
-                context_files=agent.get("context_files"),
-            ))
+        context_files = [
+            ContextFileInfo(
+                id=f.id,
+                name=f.original_filename,
+                type=f.mime_type,
+                size=f.file_size,
+                uploaded_at=f.created_at.isoformat() if f.created_at else "",
+            )
+            for f in sorted(active_files, key=lambda x: x.created_at or "", reverse=True)
+        ] if active_files else None
+
+        all_agents.append(ProjectAgentInfo(
+            id=agent.id,
+            session_id=agent.design_session_id,
+            agent_index=idx,
+            name=agent.name,
+            persona=agent.persona,
+            topics=agent.topics or [],
+            tone=agent.tone,
+            system_prompt=agent.system_prompt,
+            status=agent.status,
+            context_files=context_files,
+        ))
 
     return ProjectAgentsResponse(
         project_id=project_id,
         agents=all_agents,
-        session_count=len(sessions),
+        agent_count=len(all_agents),
+    )
+
+
+class SaveAgentsResponse(BaseModel):
+    """Response after saving agents from a design session."""
+    session_id: str
+    agents_created: int
+    agent_ids: list[str]
+
+
+@router.post("/{session_id}/save-agents", response_model=SaveAgentsResponse)
+async def save_agents(
+    session_id: str,
+    db: AsyncSession = Depends(get_db)
+) -> SaveAgentsResponse:
+    """Save agents from design session to InterviewAgent table.
+
+    This persists the agent configuration from the session's blueprint_state
+    to the canonical InterviewAgent table, making them available for use.
+    Also marks the session as COMPLETED.
+    """
+    from clara.db.models import InterviewAgent, InterviewAgentStatus
+
+    # Get the design session
+    result = await db.execute(
+        select(DesignSession).where(DesignSession.id == session_id)
+    )
+    db_session = result.scalar_one_or_none()
+
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get agents from blueprint_state
+    blueprint_state = db_session.blueprint_state or {}
+    agents_data = blueprint_state.get("agents", [])
+
+    if not agents_data:
+        raise HTTPException(
+            status_code=400,
+            detail="No agents to save. Complete the design process first."
+        )
+
+    # Get agent capabilities (shared across all agents in this session)
+    agent_capabilities = db_session.agent_capabilities
+
+    # Get existing agent names for this project to avoid duplicates
+    existing_result = await db.execute(
+        select(InterviewAgent.name)
+        .where(InterviewAgent.project_id == db_session.project_id)
+    )
+    existing_names: set[str] = {row[0] for row in existing_result.fetchall()}
+
+    created_agent_ids = []
+
+    for agent_data in agents_data:
+        # Generate agent ID
+        agent_id = f"agent_{uuid.uuid4().hex[:16]}"
+
+        # Get name with auto-suffix for duplicates
+        base_name = agent_data.get("name", "Interview Agent")
+        name = base_name
+        if name in existing_names:
+            suffix = 2
+            while f"{base_name} ({suffix})" in existing_names:
+                suffix += 1
+            name = f"{base_name} ({suffix})"
+        existing_names.add(name)
+
+        # Create InterviewAgent record
+        agent = InterviewAgent(
+            id=agent_id,
+            project_id=db_session.project_id,
+            name=name,
+            persona=agent_data.get("persona"),
+            topics=agent_data.get("topics", []),
+            tone=agent_data.get("tone"),
+            system_prompt=agent_data.get("system_prompt"),
+            capabilities=agent_capabilities,
+            status=InterviewAgentStatus.DRAFT.value,
+            design_session_id=session_id,
+        )
+        db.add(agent)
+        created_agent_ids.append(agent_id)
+
+    # Mark session as completed
+    db_session.status = DesignSessionStatus.COMPLETED.value
+    db_session.updated_at = datetime.now(UTC)
+
+    await db.commit()
+
+    logger.info(
+        f"Saved {len(created_agent_ids)} agents from session {session_id}: {created_agent_ids}"
+    )
+
+    return SaveAgentsResponse(
+        session_id=session_id,
+        agents_created=len(created_agent_ids),
+        agent_ids=created_agent_ids,
     )
 
 

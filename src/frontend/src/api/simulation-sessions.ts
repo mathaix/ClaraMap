@@ -8,7 +8,6 @@ export type SimulationModel = 'sonnet' | 'haiku' | 'opus';
 
 export interface CreateSimulationRequest {
   system_prompt: string;
-  design_session_id?: string;
   model?: SimulationModel;
 }
 
@@ -69,15 +68,16 @@ export async function createSimulationSession(
 }
 
 /**
- * Create a simulation session from an existing design session's blueprint.
+ * Create a simulation session from an InterviewAgent.
+ * This is the PREFERRED method - reads from canonical InterviewAgent table.
  */
-export async function createSimulationFromDesignSession(
-  designSessionId: string,
+export async function createSimulationFromAgent(
+  agentId: string,
   model?: SimulationModel
 ): Promise<CreateSimulationResponse> {
   const url = model
-    ? `${API_BASE}/from-design-session/${designSessionId}?model=${model}`
-    : `${API_BASE}/from-design-session/${designSessionId}`;
+    ? `${API_BASE}/from-agent/${agentId}?model=${model}`
+    : `${API_BASE}/from-agent/${agentId}`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -230,17 +230,18 @@ export async function createAutoSimulation(
 }
 
 /**
- * Create an automated simulation from a design session's blueprint.
+ * Create an automated simulation from an InterviewAgent.
+ * This is the PREFERRED method - reads from canonical InterviewAgent table.
  */
-export async function createAutoSimulationFromDesignSession(
-  designSessionId: string,
+export async function createAutoSimulationFromAgent(
+  agentId: string,
   persona: PersonaConfig,
   model?: SimulationModel
 ): Promise<AutoSimulationResponse> {
   const params = new URLSearchParams();
   if (model) params.set('model', model);
 
-  const url = `${API_BASE}/auto/from-design-session/${designSessionId}${params.toString() ? `?${params}` : ''}`;
+  const url = `${API_BASE}/auto/from-agent/${agentId}${params.toString() ? `?${params}` : ''}`;
 
   const response = await fetch(url, {
     method: 'POST',

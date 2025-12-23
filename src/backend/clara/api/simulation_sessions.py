@@ -23,7 +23,7 @@ from clara.agents.simulation_agent import (
     PersonaConfig,
     simulation_manager,
 )
-from clara.db.models import DesignSession
+from clara.db.models import InterviewAgent
 from clara.db.session import get_db
 from clara.security import InputSanitizer
 
@@ -35,7 +35,6 @@ router = APIRouter(prefix="/simulation-sessions", tags=["simulation-sessions"])
 class CreateSimulationRequest(BaseModel):
     """Request to create a new simulation session."""
     system_prompt: str = Field(..., min_length=1, max_length=50000)
-    design_session_id: str | None = None  # Optional link to design session
     model: str | None = Field(
         None,
         description="Model to use: sonnet (default), haiku (fast), opus (capable)"
@@ -114,6 +113,8 @@ class PersonaRequest(BaseModel):
     def validate_url(cls, v: str | None) -> str | None:
         if v is not None:
             v = v.strip()
+            if not v:
+                return None  # Treat empty string as None
             if not v.startswith(('http://', 'https://')):
                 raise ValueError("URL must start with http:// or https://")
         return v
@@ -163,20 +164,6 @@ class RunAutoSimulationRequest(BaseModel):
     num_turns: int = Field(5, ge=1, le=20, description="Number of conversation turns")
 
 
-class BlueprintAgent(BaseModel):
-    """Validated agent from blueprint state."""
-    name: str | None = None
-    system_prompt: str | None = None
-    persona: str | None = None
-    tone: str | None = None
-    topics: list[str] = Field(default_factory=list)
-
-
-class BlueprintState(BaseModel):
-    """Validated blueprint state from design session."""
-    agents: list[BlueprintAgent] = Field(default_factory=list)
-
-
 def format_sse_event(event: AGUIEvent) -> str:
     """Format an AG-UI event as an SSE event."""
     data = json.dumps({"type": event.type, **event.data})
@@ -207,13 +194,17 @@ async def create_simulation(
     )
 
 
-@router.post("/from-design-session/{design_session_id}", response_model=CreateSimulationResponse)
-async def create_simulation_from_design_session(
-    design_session_id: str,
+@router.post("/from-agent/{agent_id}", response_model=CreateSimulationResponse)
+async def create_simulation_from_agent(
+    agent_id: str,
     model: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> CreateSimulationResponse:
-    """Create a simulation session using the system prompt from a design session's blueprint."""
+    """Create a simulation session using the system prompt from an InterviewAgent.
+
+    This is the PREFERRED method for creating simulations as it reads from the
+    canonical InterviewAgent table instead of embedded JSON in design sessions.
+    """
     # Validate model if provided
     if model is not None and model not in VALID_MODELS:
         valid = ', '.join(sorted(VALID_MODELS))
@@ -221,49 +212,31 @@ async def create_simulation_from_design_session(
             status_code=400,
             detail=f"Invalid model '{model}'. Must be one of: {valid}"
         )
+
     try:
-        # Get the design session
         result = await db.execute(
-            select(DesignSession).where(DesignSession.id == design_session_id)
+            select(InterviewAgent).where(InterviewAgent.id == agent_id)
         )
-        design_session = result.scalar_one_or_none()
+        agent = result.scalar_one_or_none()
     except SQLAlchemyError:
-        logger.exception("Database error fetching design session")
+        logger.exception("Database error fetching interview agent")
         raise HTTPException(status_code=500, detail="Database error")
 
-    if not design_session:
-        raise HTTPException(status_code=404, detail="Design session not found")
+    if not agent:
+        raise HTTPException(status_code=404, detail="Interview agent not found")
 
-    # Validate blueprint_state using Pydantic model
-    try:
-        blueprint = BlueprintState.model_validate(design_session.blueprint_state or {})
-    except Exception as e:
-        logger.warning(f"Invalid blueprint state: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid blueprint configuration. Please re-run the design process."
-        )
-
-    if not blueprint.agents:
-        raise HTTPException(
-            status_code=400,
-            detail="No agents configured in blueprint. Complete the design process first."
-        )
-
-    # Use the first agent's system prompt
-    agent = blueprint.agents[0]
     system_prompt = agent.system_prompt
 
     if not system_prompt:
         raise HTTPException(
             status_code=400,
-            detail="No system prompt found in agent configuration. Complete Phase 3 first."
+            detail="No system prompt found in agent. Complete the design process first."
         )
 
     # Sanitize the system prompt
     system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
 
-    # Create simulation session with optional model override
+    # Create simulation session
     session_id = str(uuid.uuid4())
 
     session = await simulation_manager.create_session(
@@ -273,7 +246,7 @@ async def create_simulation_from_design_session(
     )
 
     logger.info(
-        f"Created simulation {session_id} from design {design_session_id} (model: {session.model})"
+        f"Created simulation {session_id} from agent {agent_id} (model: {session.model})"
     )
 
     preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
@@ -281,6 +254,82 @@ async def create_simulation_from_design_session(
         session_id=session_id,
         system_prompt_preview=preview,
         model=session.model,
+    )
+
+
+@router.post("/auto/from-agent/{agent_id}", response_model=AutoSimulationResponse)
+async def create_auto_simulation_from_agent(
+    agent_id: str,
+    persona: PersonaRequest,
+    model: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> AutoSimulationResponse:
+    """Create an automated simulation from an InterviewAgent.
+
+    This is the PREFERRED method for creating auto-simulations as it reads from
+    the canonical InterviewAgent table instead of embedded JSON in design sessions.
+    """
+    # Validate model if provided
+    if model is not None and model not in VALID_MODELS:
+        valid = ', '.join(sorted(VALID_MODELS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model '{model}'. Must be one of: {valid}"
+        )
+
+    try:
+        result = await db.execute(
+            select(InterviewAgent).where(InterviewAgent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.exception("Database error fetching interview agent")
+        raise HTTPException(status_code=500, detail="Database error")
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Interview agent not found")
+
+    system_prompt = agent.system_prompt
+
+    if not system_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="No system prompt found in agent. Complete the design process first."
+        )
+
+    system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
+
+    session_id = str(uuid.uuid4())
+
+    # Convert request persona to PersonaConfig
+    persona_config = PersonaConfig(
+        role=persona.role,
+        company_url=persona.company_url,
+        name=persona.name,
+        experience_years=persona.experience_years,
+        communication_style=persona.communication_style,
+    )
+
+    session = await simulation_manager.create_session(
+        session_id=session_id,
+        interviewer_prompt=system_prompt,
+        persona=persona_config,
+        model=model,
+    )
+
+    logger.info(
+        f"Created auto-simulation {session_id} from agent {agent_id} "
+        f"with persona: {persona_config.role}"
+    )
+
+    preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
+
+    return AutoSimulationResponse(
+        session_id=session_id,
+        system_prompt_preview=preview,
+        model=session.model,
+        persona_role=persona_config.role,
+        persona_name=persona_config.name,
     )
 
 
@@ -423,98 +472,6 @@ async def create_auto_simulation(
         model=session.model,
         persona_role=persona.role,
         persona_name=persona.name,
-    )
-
-
-@router.post("/auto/from-design-session/{design_session_id}", response_model=AutoSimulationResponse)
-async def create_auto_simulation_from_design_session(
-    design_session_id: str,
-    persona: PersonaRequest,
-    model: str | None = None,
-    db: AsyncSession = Depends(get_db),
-) -> AutoSimulationResponse:
-    """Create an automated simulation from a design session's blueprint.
-
-    Uses the system prompt from the blueprint and the provided persona.
-    """
-    # Validate model if provided
-    if model is not None and model not in VALID_MODELS:
-        valid = ', '.join(sorted(VALID_MODELS))
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid model '{model}'. Must be one of: {valid}"
-        )
-
-    try:
-        result = await db.execute(
-            select(DesignSession).where(DesignSession.id == design_session_id)
-        )
-        design_session = result.scalar_one_or_none()
-    except SQLAlchemyError:
-        logger.exception("Database error fetching design session")
-        raise HTTPException(status_code=500, detail="Database error")
-
-    if not design_session:
-        raise HTTPException(status_code=404, detail="Design session not found")
-
-    # Validate blueprint_state
-    try:
-        blueprint = BlueprintState.model_validate(design_session.blueprint_state or {})
-    except Exception as e:
-        logger.warning(f"Invalid blueprint state: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid blueprint configuration. Please re-run the design process."
-        )
-
-    if not blueprint.agents:
-        raise HTTPException(
-            status_code=400,
-            detail="No agents configured in blueprint. Complete the design process first."
-        )
-
-    agent = blueprint.agents[0]
-    system_prompt = agent.system_prompt
-
-    if not system_prompt:
-        raise HTTPException(
-            status_code=400,
-            detail="No system prompt found in agent configuration. Complete Phase 3 first."
-        )
-
-    system_prompt = InputSanitizer.sanitize_system_prompt(system_prompt)
-
-    session_id = str(uuid.uuid4())
-
-    # Convert request persona to PersonaConfig
-    persona_config = PersonaConfig(
-        role=persona.role,
-        company_url=persona.company_url,
-        name=persona.name,
-        experience_years=persona.experience_years,
-        communication_style=persona.communication_style,
-    )
-
-    session = await simulation_manager.create_session(
-        session_id=session_id,
-        interviewer_prompt=system_prompt,
-        persona=persona_config,
-        model=model,
-    )
-
-    logger.info(
-        f"Created auto-simulation {session_id} from design {design_session_id} "
-        f"with persona: {persona_config.role}"
-    )
-
-    preview = system_prompt[:200] + "..." if len(system_prompt) > 200 else system_prompt
-
-    return AutoSimulationResponse(
-        session_id=session_id,
-        system_prompt_preview=preview,
-        model=session.model,
-        persona_role=persona_config.role,
-        persona_name=persona_config.name,
     )
 
 

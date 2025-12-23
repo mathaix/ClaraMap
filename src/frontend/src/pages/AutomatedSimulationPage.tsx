@@ -10,7 +10,7 @@ import { useParams, Link, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   createAutoSimulation,
-  createAutoSimulationFromDesignSession,
+  createAutoSimulationFromAgent,
   runAutoSimulation,
   deleteSimulation,
   SimulationModel,
@@ -40,7 +40,7 @@ Guidelines:
 export function AutomatedSimulationPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [searchParams] = useSearchParams();
-  const designSessionId = searchParams.get('designSessionId');
+  const agentId = searchParams.get('agentId');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Session state
@@ -80,23 +80,23 @@ export function AutomatedSimulationPage() {
     };
   }, [sessionId]);
 
-  // Load system prompt from design session if provided
+  // Load system prompt from agent if provided
   useEffect(() => {
-    async function loadDesignSession() {
-      if (!designSessionId) return;
+    async function loadAgent() {
+      if (!agentId) return;
 
       try {
         setIsLoading(true);
         // We'll create the session when starting, but could pre-fetch the prompt here
       } catch (err) {
-        console.error('Failed to load design session:', err);
+        console.error('Failed to load agent:', err);
       } finally {
         setIsLoading(false);
       }
     }
 
-    loadDesignSession();
-  }, [designSessionId]);
+    loadAgent();
+  }, [agentId]);
 
   const handleStartSimulation = useCallback(async () => {
     try {
@@ -106,9 +106,9 @@ export function AutomatedSimulationPage() {
 
       // Create the auto-simulation session
       let result;
-      if (designSessionId) {
-        result = await createAutoSimulationFromDesignSession(
-          designSessionId,
+      if (agentId) {
+        result = await createAutoSimulationFromAgent(
+          agentId,
           persona,
           selectedModel
         );
@@ -192,20 +192,42 @@ export function AutomatedSimulationPage() {
         } else if (event.type === 'SIMULATION_COMPLETE') {
           setStatus('completed');
         } else if (event.type === 'ERROR') {
-          setError(event.message || 'An error occurred');
+          // Robust error extraction from SSE event - handle nested/object messages
+          const rawMsg = (event as unknown as Record<string, unknown>).message;
+          let errorMsg: string;
+          if (typeof rawMsg === 'string') {
+            errorMsg = rawMsg;
+          } else if (rawMsg && typeof rawMsg === 'object') {
+            const msgObj = rawMsg as Record<string, unknown>;
+            errorMsg = (msgObj.message as string) || (msgObj.detail as string) || JSON.stringify(rawMsg);
+          } else {
+            errorMsg = 'An error occurred during simulation';
+          }
+          setError(errorMsg);
           setStatus('error');
         }
       }
 
       setStatus('completed');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to start simulation';
+      // Robust error extraction - handle various error shapes
+      let errorMessage: string;
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err && typeof err === 'object') {
+        const errObj = err as Record<string, unknown>;
+        errorMessage = (errObj.message as string) || (errObj.detail as string) || JSON.stringify(err);
+      } else {
+        errorMessage = 'Failed to start simulation';
+      }
       setError(errorMessage);
       setStatus('error');
     } finally {
       setIsLoading(false);
     }
-  }, [designSessionId, persona, systemPrompt, selectedModel, numTurns]);
+  }, [agentId, persona, systemPrompt, selectedModel, numTurns]);
 
   const handleReset = useCallback(() => {
     if (sessionId) {
@@ -358,8 +380,8 @@ export function AutomatedSimulationPage() {
             </div>
           </section>
 
-          {/* System Prompt (only if no design session) */}
-          {!designSessionId && (
+          {/* System Prompt (only if no agent specified) */}
+          {!agentId && (
             <section>
               <h3 className="text-sm font-medium text-gray-900 mb-3">Interview Prompt</h3>
               <textarea

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, Link, useLocation } from 'react-router-dom'
 import { format } from 'date-fns'
 import clsx from 'clsx'
 import {
@@ -26,6 +26,7 @@ const statusStyles: Record<ProjectStatus, string> = {
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const { data: project, isLoading, error } = useProject(projectId!)
 
   const [isEditing, setIsEditing] = useState(false)
@@ -35,7 +36,7 @@ export default function ProjectDetailPage() {
   const [editTags, setEditTags] = useState('')
   const [projectAgents, setProjectAgents] = useState<ProjectAgentsResponse | null>(null)
   const [expandedPrompts, setExpandedPrompts] = useState<Set<number>>(new Set())
-  const [uploadingAgent, setUploadingAgent] = useState<string | null>(null)  // session_id:agent_index
+  const [uploadingAgent, setUploadingAgent] = useState<string | null>(null)  // agent.id
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({})
 
@@ -54,17 +55,12 @@ export default function ProjectDetailPage() {
   const handleFileUpload = async (agent: ProjectAgentInfo, files: FileList | null) => {
     if (!files || files.length === 0) return
 
-    const agentKey = `${agent.session_id}:${agent.agent_index}`
-    setUploadingAgent(agentKey)
+    setUploadingAgent(agent.id)
     setUploadError(null)
 
     try {
       for (const file of Array.from(files)) {
-        const result = await contextFilesApi.uploadFile(
-          agent.session_id,
-          agent.agent_index,
-          file
-        )
+        const result = await contextFilesApi.uploadFile(agent.id, file)
 
         if (!result.success) {
           setUploadError(result.error || 'Upload failed')
@@ -80,16 +76,15 @@ export default function ProjectDetailPage() {
     } finally {
       setUploadingAgent(null)
       // Reset file input
-      const agentKey = `${agent.session_id}:${agent.agent_index}`
-      if (fileInputRefs.current[agentKey]) {
-        fileInputRefs.current[agentKey]!.value = ''
+      if (fileInputRefs.current[agent.id]) {
+        fileInputRefs.current[agent.id]!.value = ''
       }
     }
   }
 
   const handleDeleteFile = async (agent: ProjectAgentInfo, fileId: string) => {
     try {
-      await contextFilesApi.deleteFile(agent.session_id, agent.agent_index, fileId)
+      await contextFilesApi.deleteFile(agent.id, fileId)
       // Refresh agents
       const updated = await designSessionsApi.getProjectAgents(projectId!)
       setProjectAgents(updated)
@@ -99,10 +94,11 @@ export default function ProjectDetailPage() {
   }
 
   // Fetch project agents (aggregated from all sessions)
+  // Include location.key to refetch when navigating back from design page
   useEffect(() => {
     if (!projectId) return
     designSessionsApi.getProjectAgents(projectId).then(setProjectAgents).catch(() => {})
-  }, [projectId])
+  }, [projectId, location.key])
 
   // Check if we have agents (meaning simulation is available)
   const hasBlueprint = (projectAgents?.agents?.length ?? 0) > 0
@@ -360,11 +356,9 @@ export default function ProjectDetailPage() {
 
         {hasBlueprint && projectAgents?.agents ? (
           <div className="space-y-4">
-            {projectAgents.agents.map((agent, index) => {
-              const agentKey = `${agent.session_id}:${agent.agent_index}`
-              return (
+            {projectAgents.agents.map((agent, index) => (
               <div
-                key={agentKey}
+                key={agent.id}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-5"
               >
                 <div className="flex items-start justify-between">
@@ -387,11 +381,21 @@ export default function ProjectDetailPage() {
                       </div>
                       <div>
                         <h4 className="font-semibold text-gray-900">{agent.name}</h4>
-                        {agent.tone && (
-                          <span className="text-xs text-gray-500 capitalize">
-                            {agent.tone} tone
+                        <div className="flex items-center gap-2">
+                          {agent.tone && (
+                            <span className="text-xs text-gray-500 capitalize">
+                              {agent.tone} tone
+                            </span>
+                          )}
+                          <span className={clsx(
+                            'text-xs px-1.5 py-0.5 rounded capitalize',
+                            agent.status === 'active' ? 'bg-green-100 text-green-700' :
+                            agent.status === 'archived' ? 'bg-gray-100 text-gray-600' :
+                            'bg-yellow-100 text-yellow-700'
+                          )}>
+                            {agent.status}
                           </span>
-                        )}
+                        </div>
                       </div>
                     </div>
 
@@ -500,23 +504,23 @@ export default function ProjectDetailPage() {
                       )}
                       <input
                         type="file"
-                        ref={(el) => (fileInputRefs.current[agentKey] = el)}
+                        ref={(el) => (fileInputRefs.current[agent.id] = el)}
                         className="hidden"
                         accept={ACCEPTED_FILE_TYPES}
                         multiple
                         onChange={(e) => handleFileUpload(agent, e.target.files)}
                       />
                       <button
-                        onClick={() => fileInputRefs.current[agentKey]?.click()}
-                        disabled={uploadingAgent === agentKey}
+                        onClick={() => fileInputRefs.current[agent.id]?.click()}
+                        disabled={uploadingAgent === agent.id}
                         className={clsx(
                           "inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded",
-                          uploadingAgent === agentKey
+                          uploadingAgent === agent.id
                             ? "bg-gray-100 text-gray-400 cursor-not-allowed"
                             : "text-gray-600 bg-white border border-gray-300 hover:bg-gray-50"
                         )}
                       >
-                        {uploadingAgent === agentKey ? (
+                        {uploadingAgent === agent.id ? (
                           <>
                             <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
                               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -548,20 +552,19 @@ export default function ProjectDetailPage() {
 
                   <div className="flex gap-2 ml-4">
                     <Link
-                      to={`/projects/${projectId}/simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
+                      to={`/projects/${projectId}/simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md"
                     >
                       Simulate
                     </Link>
                     <Link
-                      to={`/projects/${projectId}/auto-simulate?designSessionId=${agent.session_id}&agentIndex=${agent.agent_index}`}
+                      to={`/projects/${projectId}/auto-simulate?agentId=${agent.id}`}
                       className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md"
                     >
                       Auto-Simulate
                     </Link>
                     <button
                       onClick={() => {
-                        // TODO: Implement assign interviews modal
                         alert(`Assign interviews to "${agent.name}" - Coming soon!`)
                       }}
                       className="px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200"
@@ -571,7 +574,7 @@ export default function ProjectDetailPage() {
                   </div>
                 </div>
               </div>
-            )})}
+            ))}
           </div>
         ) : (
           <div className="bg-gray-50 rounded-lg border border-gray-200 p-8 text-center">
