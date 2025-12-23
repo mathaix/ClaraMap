@@ -18,7 +18,9 @@ export type ClaraCustomEventName =
   | 'clara:ask'
   | 'clara:agent_configured'
   | 'clara:blueprint_preview'
-  | 'clara:prompt_editor';
+  | 'clara:prompt_editor'
+  | 'clara:data_table'
+  | 'clara:process_map';
 
 export interface AGUIEvent {
   type: AGUIEventType;
@@ -214,6 +216,7 @@ export interface AskOption {
   id: string;
   label: string;
   description?: string;
+  requires_input?: boolean;
 }
 
 export interface AskUIComponent {
@@ -221,6 +224,32 @@ export interface AskUIComponent {
   question: string;
   options: AskOption[];
   multi_select: boolean;
+}
+
+export interface DataTableColumn {
+  name: string;
+  type: 'text' | 'number' | 'enum' | 'date' | 'url';
+  required?: boolean;
+  options?: string[];
+}
+
+export interface DataTableUIComponent {
+  type: 'data_table';
+  title: string;
+  columns: DataTableColumn[];
+  min_rows?: number;
+  starter_rows?: number;
+  input_modes?: Array<'paste' | 'inline' | 'import'>;
+  summary_prompt?: string;
+}
+
+export interface ProcessMapUIComponent {
+  type: 'process_map';
+  title: string;
+  required_fields: string[];
+  edge_types?: string[];
+  min_steps?: number;
+  seed_nodes?: string[];
 }
 
 // Agent configured UI Component (from agent_summary tool)
@@ -242,7 +271,32 @@ export interface PromptEditorUIComponent {
 }
 
 // Union type for all UI components
-export type UIComponent = AskUIComponent | AgentConfiguredUIComponent | PromptEditorUIComponent;
+export type UIComponent =
+  | AskUIComponent
+  | DataTableUIComponent
+  | ProcessMapUIComponent
+  | AgentConfiguredUIComponent
+  | PromptEditorUIComponent;
+
+export type DataTableRow = Record<string, string>;
+
+export interface DataTableSubmission {
+  title: string;
+  columns: DataTableColumn[];
+  rows: DataTableRow[];
+}
+
+export interface ProcessMapStep {
+  step_name: string;
+  owner: string;
+  outcome: string;
+  edge_type?: string;
+}
+
+export interface ProcessMapSubmission {
+  title: string;
+  steps: ProcessMapStep[];
+}
 
 // Parse UI component from message content
 export function parseUIComponent(content: string): UIComponent | null {

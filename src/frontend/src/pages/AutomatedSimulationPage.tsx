@@ -17,6 +17,7 @@ import {
   CommunicationStyle,
   PersonaConfig,
 } from '../api/simulation-sessions';
+import type { UIComponent } from '../types/design-session';
 
 interface Message {
   id: string;
@@ -36,6 +37,15 @@ Guidelines:
 - Be empathetic and create a comfortable environment
 - Cover key topics: current processes, pain points, tools used, and desired improvements
 - Summarize key findings periodically`;
+
+function formatUISuggestion(value: UIComponent | undefined): string {
+  if (!value) {
+    return 'Suggested UI: details captured in a rich component.';
+  }
+  const typeLabel = value.type.replace(/_/g, ' ');
+  const title = 'title' in value && value.title ? ` (${value.title})` : '';
+  return `Suggested UI: ${typeLabel}${title}.`;
+}
 
 export function AutomatedSimulationPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -191,6 +201,18 @@ export function AutomatedSimulationPage() {
           );
         } else if (event.type === 'SIMULATION_COMPLETE') {
           setStatus('completed');
+        } else if (event.type === 'CUSTOM') {
+          const uiValue = (event as { value?: UIComponent }).value;
+          const suggestion = formatUISuggestion(uiValue);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `ui-${Date.now()}`,
+              role: 'interviewer',
+              content: suggestion,
+              isStreaming: false,
+            },
+          ]);
         } else if (event.type === 'ERROR') {
           // Robust error extraction from SSE event - handle nested/object messages
           const rawMsg = (event as unknown as Record<string, unknown>).message;

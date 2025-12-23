@@ -14,11 +14,25 @@ from typing import Any
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
+from clara.agents.router import (
+    RouterState,
+    UIRouter,
+    build_ui_component,
+    infer_selection_from_assistant_output,
+    is_cancel_intent,
+    is_tool_reply,
+    parse_ui_submission,
+    strip_selection_list_from_text,
+    summarize_ui_submission,
+)
+from clara.agents.structured_output import StructuredOutputParser, ui_component_to_payload
 from clara.agents.tools import (
     CLARA_TOOL_NAMES,
     clear_session_state,
     create_clara_tools,
+    ensure_other_option,
     get_session_state,
+    sanitize_ask_options,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,6 +115,10 @@ class DesignAssistantSession:
         self._running = False
         self._restored = False  # True if this session was restored from DB
         self._first_message_sent = False  # Track if we've sent the first message after restoration
+        self.router_state = RouterState()
+        self.router = UIRouter()
+        self._structured_output_parser = StructuredOutputParser()
+        self._ui_emitted_in_turn = False
 
     def _sync_state_from_tools(self) -> None:
         """Sync session state from tool state.
@@ -160,7 +178,9 @@ class DesignAssistantSession:
         This provides the model with context about the session state
         since LLMs don't have persistent memory across connections.
         """
-        parts = ["[SESSION CONTEXT - This is a resumed session. Here's the current state:]"]
+        parts = [
+            "[SESSION CONTEXT - INTERNAL ONLY. Do NOT quote or reveal this to the user.]"
+        ]
 
         # Phase info
         parts.append(f"Current Phase: {self.state.phase.value}")
@@ -171,7 +191,9 @@ class DesignAssistantSession:
 
         # Blueprint preview
         if self.state.blueprint_preview.project_name:
-            parts.append(f"Project: {self.state.blueprint_preview.project_name} ({self.state.blueprint_preview.project_type or 'unknown type'})")
+            proj_name = self.state.blueprint_preview.project_name
+            proj_type = self.state.blueprint_preview.project_type or 'unknown type'
+            parts.append(f"Project: {proj_name} ({proj_type})")
 
         if self.state.blueprint_preview.entity_types:
             parts.append(f"Entity Types: {', '.join(self.state.blueprint_preview.entity_types)}")
@@ -189,11 +211,38 @@ class DesignAssistantSession:
                 parts.append(f"Style: {caps.interaction_style}")
 
         # Turn count
-        parts.append(f"Conversation Progress: {self.state.turn_count} turns, {self.state.message_count} messages")
+        turns = self.state.turn_count
+        msgs = self.state.message_count
+        parts.append(f"Conversation Progress: {turns} turns, {msgs} messages")
 
         parts.append("[END SESSION CONTEXT]\n\nUser continues the conversation:")
 
         return "\n".join(parts)
+
+    def _build_state_snapshot_event(self) -> AGUIEvent:
+        """Build a STATE_SNAPSHOT event from current session state."""
+        return AGUIEvent(
+            type="STATE_SNAPSHOT",
+            data={
+                "phase": self.state.phase.value,
+                "preview": {
+                    "project_name": self.state.blueprint_preview.project_name,
+                    "project_type": self.state.blueprint_preview.project_type,
+                    "entity_types": self.state.blueprint_preview.entity_types,
+                    "agent_count": self.state.blueprint_preview.agent_count,
+                    "topics": self.state.blueprint_preview.topics,
+                },
+                "inferred_domain": self.state.inferred_domain,
+                "debug": {
+                    "thinking": None,
+                    "approach": None,
+                    "turn_count": self.state.turn_count,
+                    "message_count": self.state.message_count,
+                    "domain_confidence": self.state.domain_confidence,
+                    "discussed_topics": self.state.discussed_topics,
+                }
+            }
+        )
 
     def _create_subagents(self) -> dict[str, AgentDefinition]:
         """Define phase-based subagents.
@@ -207,7 +256,8 @@ class DesignAssistantSession:
         # Phase 2 fetches hydrated prompt to get {{goal}} from Phase 1
         phase2_prompt = """You are configuring a specialist interview agent.
 
-First, call mcp__clara__get_prompt with phase="agent_configuration" to get your full instructions with the project goal.
+First, call mcp__clara__get_prompt with phase="agent_configuration" to get your
+full instructions with the project goal.
 
 Then follow those instructions to:
 1. Analyze the goal
@@ -223,8 +273,10 @@ Then follow those instructions to:
 CRITICAL INSTRUCTION: You MUST use mcp__clara__ask for EVERY decision point.
 Do NOT proceed to build anything until you have collected user input via ask tool.
 
-Step 1: First, call mcp__clara__get_prompt with phase="blueprint_design" to get your full context.
-Step 2: Then call mcp__clara__ask to ask the user what knowledge they want to extract from interviews.
+Step 1: First, call mcp__clara__get_prompt with phase="blueprint_design" to get
+your full context.
+Step 2: Then call mcp__clara__ask to ask the user what knowledge they want to
+extract from interviews.
 Step 3: Wait for user response. Do NOT call entity/agent/project tools until user confirms via ask.
 
 Your ONLY job in this turn is:
@@ -238,13 +290,23 @@ DO NOT build entities, agents, or projects until the user has responded to your 
         return {
             "phase1-goal-discovery": AgentDefinition(
                 description=(
-                    "Handles Phase 1: Goal Understanding. "
-                    "Use this agent to discover the user's project through natural conversation. "
-                    "It will explore the 5 key dimensions and use mcp__clara__ask for structured choices. "
-                    "After completing, call mcp__clara__hydrate_phase2 with the goal summary."
+                    "Handles Phase 1: Goal Confirmation. "
+                    "Use this agent to discover the user's project through "
+                    "natural conversation. It will explore the core discovery areas "
+                    "and use mcp__clara__ask for structured choices. "
+                    "After completing, call mcp__clara__hydrate_phase2."
                 ),
-                tools=["mcp__clara__ask", "mcp__clara__project", "mcp__clara__save_goal_summary",
-                       "mcp__clara__hydrate_phase2", "mcp__clara__phase", "mcp__clara__get_prompt"],
+                tools=[
+                    "mcp__clara__ask",
+                    "mcp__clara__request_selection_list",
+                    "mcp__clara__request_data_table",
+                    "mcp__clara__request_process_map",
+                    "mcp__clara__project",
+                    "mcp__clara__save_goal_summary",
+                    "mcp__clara__hydrate_phase2",
+                    "mcp__clara__phase",
+                    "mcp__clara__get_prompt",
+                ],
                 prompt=phase1_prompt,
                 model="sonnet"
             ),
@@ -254,8 +316,15 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                     "First call mcp__clara__get_prompt to get hydrated instructions with the goal. "
                     "Then configure the specialist agent and call mcp__clara__hydrate_phase3."
                 ),
-                tools=["mcp__clara__agent_summary", "mcp__clara__phase", "mcp__clara__get_prompt",
-                       "mcp__clara__hydrate_phase3"],
+                tools=[
+                    "mcp__clara__agent_summary",
+                    "mcp__clara__phase",
+                    "mcp__clara__get_prompt",
+                    "mcp__clara__hydrate_phase3",
+                    "mcp__clara__request_selection_list",
+                    "mcp__clara__request_data_table",
+                    "mcp__clara__request_process_map",
+                ],
                 prompt=phase2_prompt,
                 model="sonnet"
             ),
@@ -263,15 +332,26 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                 description=(
                     "Handles Phase 3: Blueprint Design INTERACTIVELY. "
                     "First call mcp__clara__get_prompt to get hydrated instructions. "
-                    "This agent MUST use mcp__clara__ask to collect user input before building. "
-                    "It should NOT build entities/agents until user confirms via ask tool responses. "
-                    "Use mcp__clara__prompt_editor to show generated prompts for user editing. "
-                    "Use mcp__clara__get_agent_context to access uploaded context files."
+                    "This agent MUST use mcp__clara__ask to collect user input "
+                    "before building. It should NOT build entities/agents until "
+                    "user confirms via ask tool responses. "
+                    "Use mcp__clara__prompt_editor for editing prompts. "
+                    "Use mcp__clara__get_agent_context for context files."
                 ),
-                tools=["mcp__clara__project", "mcp__clara__entity", "mcp__clara__agent",
-                       "mcp__clara__ask", "mcp__clara__preview", "mcp__clara__phase",
-                       "mcp__clara__get_prompt", "mcp__clara__prompt_editor",
-                       "mcp__clara__get_agent_context"],
+                tools=[
+                    "mcp__clara__project",
+                    "mcp__clara__entity",
+                    "mcp__clara__agent",
+                    "mcp__clara__ask",
+                    "mcp__clara__request_selection_list",
+                    "mcp__clara__request_data_table",
+                    "mcp__clara__request_process_map",
+                    "mcp__clara__preview",
+                    "mcp__clara__phase",
+                    "mcp__clara__get_prompt",
+                    "mcp__clara__prompt_editor",
+                    "mcp__clara__get_agent_context",
+                ],
                 prompt=phase3_prompt,
                 model="sonnet"
             ),
@@ -298,12 +378,23 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                 data={"tool": tool_name, "input": tool_input}
             ))
 
+            if tool_name in {
+                "mcp__clara__request_data_table",
+                "mcp__clara__request_process_map",
+                "mcp__clara__request_selection_list",
+            }:
+                normalized_tool = tool_name.replace("mcp__clara__", "")
+                self.router_state.pending_tool = normalized_tool
+                self.router_state.last_tool = normalized_tool
+                self.router_state.last_tool_status = "open"
+
             # Special handling for ask tool - emit CUSTOM event with UI component
             if tool_name == "mcp__clara__ask":
+                options = sanitize_ask_options(tool_input.get("options", []))
                 ui_component = {
                     "type": "user_input_required",
                     "question": tool_input.get("question", ""),
-                    "options": tool_input.get("options", []),
+                    "options": options,
                     "multi_select": tool_input.get("multi_select", False),
                 }
                 # Emit as CUSTOM AG-UI event for reliable rendering
@@ -311,7 +402,23 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                     type="CUSTOM",
                     data={"name": "clara:ask", "value": ui_component}
                 ))
+                self._ui_emitted_in_turn = True
                 logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:ask")
+
+            if tool_name == "mcp__clara__request_selection_list":
+                options = ensure_other_option(sanitize_ask_options(tool_input.get("options", [])))
+                ui_component = {
+                    "type": "user_input_required",
+                    "question": tool_input.get("question", ""),
+                    "options": options,
+                    "multi_select": tool_input.get("multi_select", False),
+                }
+                await response_queue.put(AGUIEvent(
+                    type="CUSTOM",
+                    data={"name": "clara:ask", "value": ui_component}
+                ))
+                self._ui_emitted_in_turn = True
+                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:ask (selection list)")
 
             # Special handling for prompt_editor tool - emit CUSTOM event for editable prompt
             if tool_name == "mcp__clara__prompt_editor":
@@ -326,7 +433,41 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                     type="CUSTOM",
                     data={"name": "clara:prompt_editor", "value": ui_component}
                 ))
+                self._ui_emitted_in_turn = True
                 logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:prompt_editor")
+
+            if tool_name == "mcp__clara__request_data_table":
+                ui_component = {
+                    "type": "data_table",
+                    "title": tool_input.get("title", "Data Table"),
+                    "columns": tool_input.get("columns", []),
+                    "min_rows": tool_input.get("min_rows", 3),
+                    "starter_rows": tool_input.get("starter_rows", 3),
+                    "input_modes": tool_input.get("input_modes", ["paste", "inline"]),
+                    "summary_prompt": tool_input.get("summary_prompt", ""),
+                }
+                await response_queue.put(AGUIEvent(
+                    type="CUSTOM",
+                    data={"name": "clara:data_table", "value": ui_component}
+                ))
+                self._ui_emitted_in_turn = True
+                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:data_table")
+
+            if tool_name == "mcp__clara__request_process_map":
+                ui_component = {
+                    "type": "process_map",
+                    "title": tool_input.get("title", "Process Map"),
+                    "required_fields": tool_input.get("required_fields", []),
+                    "edge_types": tool_input.get("edge_types", []),
+                    "min_steps": tool_input.get("min_steps", 3),
+                    "seed_nodes": tool_input.get("seed_nodes", []),
+                }
+                await response_queue.put(AGUIEvent(
+                    type="CUSTOM",
+                    data={"name": "clara:process_map", "value": ui_component}
+                ))
+                self._ui_emitted_in_turn = True
+                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:process_map")
 
             # Note: agent_summary tool stores config in state but no longer emits UI card
 
@@ -406,11 +547,38 @@ DO NOT build entities, agents, or projects until the user has responded to your 
         if not self._running or not self.client:
             raise RuntimeError("Session not started")
 
+        self._ui_emitted_in_turn = False
         self.state.message_count += 1
         self.state.turn_count += 1
 
         # Sync state from tools before emitting snapshot
         self._sync_state_from_tools()
+
+        submission = parse_ui_submission(message)
+        if submission:
+            self.router_state.last_tool = submission.kind
+            self.router_state.last_tool_status = "completed"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
+            message = summarize_ui_submission(submission)
+
+        if (
+            not submission
+            and self.router_state.pending_tool == "request_selection_list"
+            and is_tool_reply(message)
+        ):
+            self.router_state.last_tool_status = "completed"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
+
+        if (
+            not submission
+            and self.router_state.pending_tool
+            and is_cancel_intent(message)
+        ):
+            self.router_state.last_tool_status = "canceled"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
 
         # For restored sessions, prepend context on first message
         actual_message = message
@@ -421,28 +589,85 @@ DO NOT build entities, agents, or projects until the user has responded to your 
             logger.info(f"[{self.session_id}] Prepending restoration context to first message")
 
         # Emit state snapshot at start of turn
-        yield AGUIEvent(
-            type="STATE_SNAPSHOT",
-            data={
-                "phase": self.state.phase.value,
-                "preview": {
-                    "project_name": self.state.blueprint_preview.project_name,
-                    "project_type": self.state.blueprint_preview.project_type,
-                    "entity_types": self.state.blueprint_preview.entity_types,
-                    "agent_count": self.state.blueprint_preview.agent_count,
-                    "topics": self.state.blueprint_preview.topics,
-                },
-                "inferred_domain": self.state.inferred_domain,
-                "debug": {
-                    "thinking": None,
-                    "approach": None,
-                    "turn_count": self.state.turn_count,
-                    "message_count": self.state.message_count,
-                    "domain_confidence": self.state.domain_confidence,
-                    "discussed_topics": self.state.discussed_topics,
-                }
-            }
-        )
+        yield self._build_state_snapshot_event()
+
+        if not submission:
+            decision = None
+            if self.state.phase != DesignPhase.GOAL_UNDERSTANDING:
+                decision = await self.router.decide(
+                    message=message,
+                    state=self.router_state,
+                    phase=self.state.phase.value,
+                    flow="design_assistant",
+                    allow_selection=False,
+                )
+
+            if decision and decision.action in {"tool", "clarify"}:
+                preamble = ""
+                if decision.action == "tool":
+                    ui_component = build_ui_component(decision)
+                    if not ui_component:
+                        decision = None
+                    else:
+                        tool_name_map = {
+                            "request_data_table": "mcp__clara__request_data_table",
+                            "request_process_map": "mcp__clara__request_process_map",
+                            "request_selection_list": "mcp__clara__request_selection_list",
+                        }
+                        tool_name = tool_name_map.get(
+                            decision.tool_name, "mcp__clara__request_data_table"
+                        )
+                        if decision.tool_name == "request_data_table":
+                            preamble = "Let's capture that in a table."
+                        elif decision.tool_name == "request_process_map":
+                            preamble = "Let's map the steps so we capture the workflow accurately."
+                        elif decision.tool_name == "request_selection_list":
+                            preamble = "Pick the options that apply."
+                        tool_state = get_session_state(self.session_id)
+                        tool_state["pending_ui_component"] = ui_component
+                        self.router_state.pending_tool = decision.tool_name
+                        self.router_state.pending_payload = decision.params
+                        self.router_state.last_tool = decision.tool_name
+                        self.router_state.last_tool_status = "open"
+
+                        yield AGUIEvent(
+                            type="TOOL_CALL_START",
+                            data={"tool": tool_name, "input": decision.params or {}}
+                        )
+                        yield AGUIEvent(
+                            type="TEXT_MESSAGE_CONTENT",
+                            data={"delta": preamble}
+                        )
+                        yield AGUIEvent(
+                            type="CUSTOM",
+                            data={
+                                "name": (
+                                    "clara:data_table"
+                                    if decision.tool_name == "request_data_table"
+                                    else "clara:process_map"
+                                    if decision.tool_name == "request_process_map"
+                                    else "clara:ask"
+                                ),
+                                "value": ui_component,
+                            }
+                        )
+                        yield AGUIEvent(
+                            type="TOOL_CALL_END",
+                            data={"tool": tool_name}
+                        )
+                        yield AGUIEvent(type="TEXT_MESSAGE_END", data={})
+                        yield self._build_state_snapshot_event()
+                        return
+
+                if decision and decision.action == "clarify":
+                    self.router_state.last_clarify = decision.clarifying_question
+                    yield AGUIEvent(
+                        type="TEXT_MESSAGE_CONTENT",
+                        data={"delta": decision.clarifying_question or "Can you clarify?"}
+                    )
+                    yield AGUIEvent(type="TEXT_MESSAGE_END", data={})
+                    yield self._build_state_snapshot_event()
+                    return
 
         # Send message to agent (uses actual_message which may include restoration context)
         await self.client.query(prompt=actual_message)
@@ -458,6 +683,7 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                     break
 
         # Stream response
+        use_structured_output = self._structured_output_parser.is_available()
         current_text = ""
         async for msg in self.client.receive_response():
             # First, drain any events queued by hooks
@@ -484,7 +710,7 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                                     # New message - emit the full text
                                     delta = new_text
                                 current_text = new_text
-                                if delta:  # Only emit if there's actual content
+                                if delta and not use_structured_output:
                                     yield AGUIEvent(
                                         type="TEXT_MESSAGE_CONTENT",
                                         data={"delta": delta}
@@ -505,7 +731,9 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                 if hasattr(msg, 'content'):
                     # Content can be a list of blocks or a string
                     content = msg.content
-                    logger.info(f"[{self.session_id}] Tool content type: {type(content)}, value: {content}")
+                    logger.info(
+                        f"[{self.session_id}] Tool content: {type(content)}"
+                    )
                     if isinstance(content, list):
                         for block in content:
                             if hasattr(block, 'text'):
@@ -517,7 +745,7 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                 # Also check for 'result' attribute
                 elif hasattr(msg, 'result'):
                     result = msg.result
-                    logger.info(f"[{self.session_id}] Tool result type: {type(result)}, value: {result}")
+                    logger.info(f"[{self.session_id}] Tool result: {type(result)}")
                     if isinstance(result, str):
                         tool_text = result
                     elif isinstance(result, dict) and 'content' in result:
@@ -525,7 +753,8 @@ DO NOT build entities, agents, or projects until the user has responded to your 
                             if isinstance(block, dict) and 'text' in block:
                                 tool_text += block['text']
 
-                logger.info(f"[{self.session_id}] Extracted tool_text: {tool_text[:200] if tool_text else 'empty'}")
+                tool_preview = tool_text[:100] if tool_text else 'empty'
+                logger.info(f"[{self.session_id}] Extracted tool_text: {tool_preview}")
 
                 # Note: UI components are now handled via CUSTOM events in pre_tool_hook
                 # No need to parse [UI_COMPONENT] markers from tool results
@@ -539,32 +768,115 @@ DO NOT build entities, agents, or projects until the user has responded to your 
         async for event in drain_queue():
             yield event
 
+        if use_structured_output and current_text:
+            structured_response = None
+            ui_payload: dict[str, Any] | None = None
+            selection_decision = None
+            if not self._ui_emitted_in_turn and not self.router_state.pending_tool:
+                structured_response = await self._structured_output_parser.parse(
+                    message=current_text,
+                    phase=self.state.phase.value,
+                    flow="design_assistant",
+                )
+                if structured_response:
+                    ui_payload = ui_component_to_payload(structured_response.ui_component)
+
+            if (
+                not ui_payload
+                and not self._ui_emitted_in_turn
+                and not self.router_state.pending_tool
+            ):
+                selection_decision = infer_selection_from_assistant_output(current_text)
+                if selection_decision:
+                    ui_payload = build_ui_component(selection_decision)
+
+            display_text = (
+                structured_response.display_text
+                if structured_response
+                else current_text
+            )
+            if ui_payload and display_text and ui_payload.get("type") == "user_input_required":
+                cleaned_text = strip_selection_list_from_text(display_text)
+                if cleaned_text:
+                    display_text = cleaned_text
+                elif selection_decision and selection_decision.params:
+                    display_text = (
+                        selection_decision.params.get("question") or display_text
+                    )
+
+            if display_text:
+                yield AGUIEvent(
+                    type="TEXT_MESSAGE_CONTENT",
+                    data={"delta": display_text}
+                )
+
+            if ui_payload:
+                tool_type = ui_payload.get("type")
+                tool_name = "request_selection_list"
+                custom_name = "clara:ask"
+                if tool_type == "data_table":
+                    tool_name = "request_data_table"
+                    custom_name = "clara:data_table"
+                elif tool_type == "process_map":
+                    tool_name = "request_process_map"
+                    custom_name = "clara:process_map"
+
+                tool_state = get_session_state(self.session_id)
+                tool_state["pending_ui_component"] = ui_payload
+                self.router_state.pending_tool = tool_name
+                self.router_state.pending_payload = ui_payload
+                self.router_state.last_tool = tool_name
+                self.router_state.last_tool_status = "open"
+                self._ui_emitted_in_turn = True
+
+                yield AGUIEvent(
+                    type="TOOL_CALL_START",
+                    data={
+                        "tool": f"mcp__clara__{tool_name}",
+                        "input": ui_payload,
+                    }
+                )
+                yield AGUIEvent(
+                    type="CUSTOM",
+                    data={"name": custom_name, "value": ui_payload}
+                )
+                yield AGUIEvent(
+                    type="TOOL_CALL_END",
+                    data={"tool": f"mcp__clara__{tool_name}"}
+                )
+
+        if not use_structured_output and current_text and not self.router_state.pending_tool:
+            selection_decision = infer_selection_from_assistant_output(current_text)
+            if selection_decision:
+                ui_component = build_ui_component(selection_decision)
+                if ui_component:
+                    tool_state = get_session_state(self.session_id)
+                    tool_state["pending_ui_component"] = ui_component
+                    self.router_state.pending_tool = selection_decision.tool_name
+                    self.router_state.pending_payload = selection_decision.params
+                    self.router_state.last_tool = selection_decision.tool_name
+                    self.router_state.last_tool_status = "open"
+                    yield AGUIEvent(
+                        type="TOOL_CALL_START",
+                        data={
+                            "tool": "mcp__clara__request_selection_list",
+                            "input": selection_decision.params or {},
+                        }
+                    )
+                    yield AGUIEvent(
+                        type="CUSTOM",
+                        data={"name": "clara:ask", "value": ui_component}
+                    )
+                    yield AGUIEvent(
+                        type="TOOL_CALL_END",
+                        data={"tool": "mcp__clara__request_selection_list"}
+                    )
+
         # Sync state from tools after all tool calls complete
         self._sync_state_from_tools()
 
         # Emit final state snapshot with any changes from this turn
-        yield AGUIEvent(
-            type="STATE_SNAPSHOT",
-            data={
-                "phase": self.state.phase.value,
-                "preview": {
-                    "project_name": self.state.blueprint_preview.project_name,
-                    "project_type": self.state.blueprint_preview.project_type,
-                    "entity_types": self.state.blueprint_preview.entity_types,
-                    "agent_count": self.state.blueprint_preview.agent_count,
-                    "topics": self.state.blueprint_preview.topics,
-                },
-                "inferred_domain": self.state.inferred_domain,
-                "debug": {
-                    "thinking": None,
-                    "approach": None,
-                    "turn_count": self.state.turn_count,
-                    "message_count": self.state.message_count,
-                    "domain_confidence": self.state.domain_confidence,
-                    "discussed_topics": self.state.discussed_topics,
-                }
-            }
-        )
+        yield self._build_state_snapshot_event()
 
         # Emit end of message
         yield AGUIEvent(

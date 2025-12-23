@@ -110,6 +110,69 @@ def cleanup_stale_sessions() -> int:
     return len(stale_ids)
 
 
+def _safe_int(value: Any, default: int) -> int:
+    """Safely convert values to int with a fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def sanitize_ask_options(options: list[dict[str, Any]] | Any) -> list[dict[str, Any]]:
+    """Normalize option payloads for selection-style UIs."""
+    if not isinstance(options, list):
+        return []
+    sanitized: list[dict[str, Any]] = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        label = InputSanitizer.sanitize_name(option.get("label", ""))
+        if not label:
+            continue
+        option_id = InputSanitizer.sanitize_name(option.get("id") or label) or "option"
+        description = InputSanitizer.sanitize_description(option.get("description"))
+        requires_input = bool(option.get("requires_input"))
+        if label.strip().lower().startswith("other"):
+            requires_input = True
+        entry: dict[str, Any] = {
+            "id": option_id,
+            "label": label,
+        }
+        if description:
+            entry["description"] = description
+        if requires_input:
+            entry["requires_input"] = True
+        sanitized.append(entry)
+    return sanitized
+
+
+def ensure_other_option(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Append an Other option if missing, and mark it as requiring input."""
+    for option in options:
+        label = str(option.get("label", "")).strip().lower()
+        if label.startswith("other"):
+            option["requires_input"] = True
+            return options
+
+    other_id = "other"
+    existing_ids = {str(option.get("id")) for option in options}
+    if other_id in existing_ids:
+        suffix = 2
+        while f"other_{suffix}" in existing_ids:
+            suffix += 1
+        other_id = f"other_{suffix}"
+
+    return [
+        *options,
+        {
+            "id": other_id,
+            "label": "Other",
+            "description": "Something else",
+            "requires_input": True,
+        },
+    ]
+
+
 # Tool input schemas as dicts (for the SDK)
 ProjectSchema = {
     "type": "object",
@@ -170,6 +233,36 @@ AskSchema = {
                     "id": {"type": "string"},
                     "label": {"type": "string"},
                     "description": {"type": "string"},
+                    "requires_input": {
+                        "type": "boolean",
+                        "description": "If true, require a free-text input when selected (e.g., Other).",
+                    },
+                },
+                "required": ["id", "label"],
+            },
+            "description": "Options to present to the user",
+        },
+        "multi_select": {"type": "boolean", "description": "Allow multiple selections"},
+    },
+    "required": ["question", "options"],
+}
+
+SelectionListSchema = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string", "description": "Question to ask the user"},
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "description": {"type": "string"},
+                    "requires_input": {
+                        "type": "boolean",
+                        "description": "If true, require a free-text input when selected (e.g., Other).",
+                    },
                 },
                 "required": ["id", "label"],
             },
@@ -312,6 +405,65 @@ PromptEditorSchema = {
     "required": ["title", "prompt"],
 }
 
+DataTableSchema = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "Title for the data table"},
+        "columns": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["text", "number", "enum", "date", "url"],
+                    },
+                    "required": {"type": "boolean"},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Allowed values if type is enum",
+                    },
+                },
+                "required": ["name", "type"],
+            },
+        },
+        "min_rows": {"type": "integer", "description": "Minimum number of rows"},
+        "starter_rows": {"type": "integer", "description": "Rows to prefill"},
+        "input_modes": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["paste", "inline", "import"]},
+        },
+        "summary_prompt": {"type": "string", "description": "Short prompt for summarizing the data"},
+    },
+    "required": ["title", "columns"],
+}
+
+ProcessMapSchema = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "Title for the process map"},
+        "required_fields": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Required fields per step",
+        },
+        "edge_types": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Allowed edge types between steps",
+        },
+        "min_steps": {"type": "integer", "description": "Minimum number of steps"},
+        "seed_nodes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Seed step labels",
+        },
+    },
+    "required": ["title"],
+}
+
 GetAgentContextSchema = {
     "type": "object",
     "properties": {
@@ -438,10 +590,11 @@ def create_clara_tools(session_id: str):
         logger.info(f"[{session_id}] Asking user: {args['question']}")
         # Store UI component in session state for frontend access
         state = get_session_state(session_id)
+        options = sanitize_ask_options(args.get("options", []))
         ui_component = {
             "type": "user_input_required",
             "question": args["question"],
-            "options": args["options"],
+            "options": options,
             "multi_select": args.get("multi_select", False),
         }
         state["pending_ui_component"] = ui_component
@@ -450,6 +603,110 @@ def create_clara_tools(session_id: str):
             "content": [{
                 "type": "text",
                 "text": f"Presenting options to user: {args['question']}"
+            }]
+        }
+
+    @tool("request_selection_list", "Present a checkbox/radio list for selection", SelectionListSchema)
+    async def request_selection_list_tool(args: dict) -> dict[str, Any]:
+        """Show a selection list UI to user."""
+        logger.info(f"[{session_id}] Requesting selection list: {args['question']}")
+        state = get_session_state(session_id)
+        options = ensure_other_option(sanitize_ask_options(args.get("options", [])))
+        ui_component = {
+            "type": "user_input_required",
+            "question": args["question"],
+            "options": options,
+            "multi_select": args.get("multi_select", False),
+        }
+        state["pending_ui_component"] = ui_component
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"Presenting selection list: {args['question']}"
+            }]
+        }
+
+    @tool("request_data_table", "Request structured data table input", DataTableSchema)
+    async def request_data_table_tool(args: dict) -> dict[str, Any]:
+        """Show a data table UI to capture structured lists."""
+        state = get_session_state(session_id)
+
+        title = InputSanitizer.sanitize_name(args.get("title", "")) or "Data Table"
+        columns = []
+        for column in args.get("columns", []):
+            name = InputSanitizer.sanitize_name(column.get("name", "")) or "Item"
+            col_type = column.get("type", "text")
+            if col_type not in {"text", "number", "enum", "date", "url"}:
+                col_type = "text"
+            options = InputSanitizer.sanitize_array(column.get("options"))
+            columns.append(
+                {
+                    "name": name,
+                    "type": col_type,
+                    "required": bool(column.get("required")),
+                    "options": options or None,
+                }
+            )
+
+        max_rows = 50
+        min_rows = _safe_int(args.get("min_rows"), 1)
+        min_rows = min(max_rows, max(1, min_rows))
+        starter_rows = _safe_int(args.get("starter_rows"), min_rows)
+        starter_rows = min(max_rows, max(1, starter_rows), min_rows)
+        input_modes = InputSanitizer.sanitize_array(args.get("input_modes", ["paste", "inline"]))
+
+        ui_component = {
+            "type": "data_table",
+            "title": title,
+            "columns": columns,
+            "min_rows": min_rows,
+            "starter_rows": starter_rows,
+            "input_modes": input_modes or ["paste", "inline"],
+            "summary_prompt": InputSanitizer.sanitize_description(args.get("summary_prompt")),
+        }
+
+        state["pending_ui_component"] = ui_component
+
+        logger.info(f"[{session_id}] Requesting data table: {title}")
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"Requesting data table: {title}"
+            }]
+        }
+
+    @tool("request_process_map", "Request a process map input", ProcessMapSchema)
+    async def request_process_map_tool(args: dict) -> dict[str, Any]:
+        """Show a process map UI to capture workflows."""
+        state = get_session_state(session_id)
+
+        title = InputSanitizer.sanitize_name(args.get("title", "")) or "Process Map"
+        required_fields = InputSanitizer.sanitize_array(
+            args.get("required_fields", ["step_name", "owner", "outcome"])
+        )
+        edge_types = InputSanitizer.sanitize_array(
+            args.get("edge_types", ["sequence", "approval", "parallel"])
+        )
+        seed_nodes = InputSanitizer.sanitize_array(args.get("seed_nodes", []))
+        min_steps = _safe_int(args.get("min_steps"), 1)
+        min_steps = min(min_steps, 20)
+
+        ui_component = {
+            "type": "process_map",
+            "title": title,
+            "required_fields": required_fields or ["step_name", "owner", "outcome"],
+            "edge_types": edge_types or ["sequence", "approval", "parallel"],
+            "min_steps": min_steps,
+            "seed_nodes": seed_nodes,
+        }
+
+        state["pending_ui_component"] = ui_component
+
+        logger.info(f"[{session_id}] Requesting process map: {title}")
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"Requesting process map: {title}"
             }]
         }
 
@@ -937,6 +1194,9 @@ def create_clara_tools(session_id: str):
             entity_tool,
             agent_tool,
             ask_tool,
+            request_selection_list_tool,
+            request_data_table_tool,
+            request_process_map_tool,
             phase_tool,
             preview_tool,
             agent_summary_tool,
@@ -957,6 +1217,9 @@ CLARA_TOOL_NAMES = [
     "mcp__clara__entity",
     "mcp__clara__agent",
     "mcp__clara__ask",
+    "mcp__clara__request_selection_list",
+    "mcp__clara__request_data_table",
+    "mcp__clara__request_process_map",
     "mcp__clara__phase",
     "mcp__clara__preview",
     "mcp__clara__agent_summary",

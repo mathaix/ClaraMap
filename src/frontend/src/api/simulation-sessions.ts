@@ -207,6 +207,8 @@ export interface AutoSimulationEvent {
   message?: string;
   role?: string;
   turns?: number;
+  name?: string;
+  value?: unknown;
 }
 
 /**
