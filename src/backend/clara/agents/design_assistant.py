@@ -1,888 +1,105 @@
 """Design Assistant using Claude Agent SDK.
 
-This module implements Clara's Design Architect agent that helps users
-create Interview Blueprints through collaborative conversation.
+This module provides the public interface for Clara's Design Architect agent.
+The actual implementation is delegated to the DesignOrchestrator which routes
+messages to specialized phase agents.
+
+This file maintains backward compatibility with existing code that uses
+DesignAssistantSession and session_manager.
 """
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
-from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
-
-from clara.agents.router import (
-    RouterState,
-    UIRouter,
-    build_ui_component,
-    infer_selection_from_assistant_output,
-    is_cancel_intent,
-    is_tool_reply,
-    parse_ui_submission,
-    strip_selection_list_from_text,
-    summarize_ui_submission,
+from clara.agents.orchestrator import (
+    AgentCapabilities,
+    AGUIEvent,
+    BlueprintPreview,
+    DesignOrchestrator,
+    DesignPhase,
+    DesignSessionState,
 )
-from clara.agents.structured_output import StructuredOutputParser, ui_component_to_payload
-from clara.agents.tools import (
-    CLARA_TOOL_NAMES,
-    clear_session_state,
-    create_clara_tools,
-    ensure_other_option,
-    get_session_state,
-    sanitize_ask_options,
-)
+from clara.agents.tools import get_session_state
 
 logger = logging.getLogger(__name__)
 
-# Paths to prompt files
-PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-
-def load_prompt(filename: str) -> str:
-    """Load a prompt from the prompts directory."""
-    prompt_path = PROMPTS_DIR / filename
-    with open(prompt_path, encoding="utf-8") as f:
-        return f.read().strip()
-
-
-class DesignPhase(str, Enum):
-    """Phases of the blueprint design process."""
-    GOAL_UNDERSTANDING = "goal_understanding"
-    AGENT_CONFIGURATION = "agent_configuration"
-    BLUEPRINT_DESIGN = "blueprint_design"
-    COMPLETE = "complete"
-
-
-@dataclass
-class BlueprintPreview:
-    """Preview of the blueprint being designed."""
-    project_name: str | None = None
-    project_type: str | None = None
-    entity_types: list[str] = field(default_factory=list)
-    agent_count: int = 0
-    topics: list[str] = field(default_factory=list)
-
-
-@dataclass
-class AgentCapabilities:
-    """Configured specialist agent capabilities from Phase 2."""
-    role: str | None = None
-    capabilities: list[str] = field(default_factory=list)
-    expertise_areas: list[str] = field(default_factory=list)
-    interaction_style: str | None = None
-    focus_areas: list[str] = field(default_factory=list)
-
-
-@dataclass
-class DesignSessionState:
-    """State for a design assistant session."""
-    session_id: str
-    project_id: str
-    phase: DesignPhase = DesignPhase.GOAL_UNDERSTANDING
-    blueprint_preview: BlueprintPreview = field(default_factory=BlueprintPreview)
-    agent_capabilities: AgentCapabilities = field(default_factory=AgentCapabilities)
-    goal_summary: str | None = None
-    inferred_domain: str | None = None
-    domain_confidence: float = 0.0
-    turn_count: int = 0
-    message_count: int = 0
-    discussed_topics: list[str] = field(default_factory=list)
-
-
-@dataclass
-class AGUIEvent:
-    """Base AG-UI event structure."""
-    type: str
-    data: dict[str, Any]
+# Re-export types for backward compatibility
+__all__ = [
+    "DesignPhase",
+    "BlueprintPreview",
+    "AgentCapabilities",
+    "DesignSessionState",
+    "AGUIEvent",
+    "DesignAssistantSession",
+    "DesignAssistantManager",
+    "session_manager",
+]
 
 
 class DesignAssistantSession:
-    """Manages a single design assistant session using Claude Agent SDK."""
+    """Thin wrapper around DesignOrchestrator for backward compatibility.
+
+    This class maintains the same public interface as the original
+    DesignAssistantSession but delegates all work to the orchestrator.
+    """
 
     def __init__(self, session_id: str, project_id: str):
-        self.session_id = session_id
-        self.project_id = project_id
-        self.state = DesignSessionState(
-            session_id=session_id,
-            project_id=project_id,
-        )
-        self.client: ClaudeSDKClient | None = None
-        self._message_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._response_queue: asyncio.Queue[AGUIEvent] = asyncio.Queue()
-        self._running = False
-        self._restored = False  # True if this session was restored from DB
-        self._first_message_sent = False  # Track if we've sent the first message after restoration
-        self.router_state = RouterState()
-        self.router = UIRouter()
-        self._structured_output_parser = StructuredOutputParser()
-        self._ui_emitted_in_turn = False
+        self._orchestrator = DesignOrchestrator(session_id, project_id)
 
-    def _sync_state_from_tools(self) -> None:
-        """Sync session state from tool state.
+    @property
+    def session_id(self) -> str:
+        return self._orchestrator.session_id
 
-        This ensures session state (used for STATE_SNAPSHOT events and DB persistence)
-        stays in sync with tool state (modified by MCP tools like phase, project, etc).
-        """
-        tool_state = get_session_state(self.session_id)
+    @property
+    def project_id(self) -> str:
+        return self._orchestrator.project_id
 
-        # Sync phase
-        if tool_state.get("phase"):
-            try:
-                self.state.phase = DesignPhase(tool_state["phase"])
-            except ValueError:
-                logger.warning(f"[{self.session_id}] Unknown phase: {tool_state['phase']}")
+    @property
+    def state(self) -> DesignSessionState:
+        return self._orchestrator.state
 
-        # Sync blueprint preview from project/entities/agents
-        if tool_state.get("project"):
-            project = tool_state["project"]
-            self.state.blueprint_preview.project_name = project.get("name")
-            self.state.blueprint_preview.project_type = project.get("type")
-            self.state.inferred_domain = project.get("domain")
+    @state.setter
+    def state(self, value: DesignSessionState) -> None:
+        self._orchestrator.state = value
 
-        if tool_state.get("entities"):
-            self.state.blueprint_preview.entity_types = [
-                e.get("name") for e in tool_state["entities"] if e.get("name")
-            ]
+    @property
+    def _restored(self) -> bool:
+        return self._orchestrator._restored
 
-        if tool_state.get("agents"):
-            self.state.blueprint_preview.agent_count = len(tool_state["agents"])
+    @_restored.setter
+    def _restored(self, value: bool) -> None:
+        self._orchestrator._restored = value
 
-        # Sync agent capabilities
-        if tool_state.get("agent_capabilities"):
-            caps = tool_state["agent_capabilities"]
-            self.state.agent_capabilities.role = caps.get("role")
-            self.state.agent_capabilities.capabilities = caps.get("capabilities", [])
-            self.state.agent_capabilities.expertise_areas = caps.get("expertise_areas", [])
-            self.state.agent_capabilities.interaction_style = caps.get("interaction_style")
-            self.state.agent_capabilities.focus_areas = caps.get("focus_areas", [])
+    @property
+    def _first_message_sent(self) -> bool:
+        return self._orchestrator._first_message_sent
 
-        # Sync goal summary
-        if tool_state.get("goal_summary"):
-            goal = tool_state["goal_summary"]
-            self.state.goal_summary = goal.get("goal_text") or goal.get("primary_goal")
-
-    def _on_phase_change(self, new_phase: str) -> None:
-        """Callback when phase changes via mcp__clara__phase tool."""
-        try:
-            self.state.phase = DesignPhase(new_phase)
-            logger.info(f"[{self.session_id}] Session state phase updated to: {new_phase}")
-        except ValueError:
-            logger.warning(f"[{self.session_id}] Unknown phase in callback: {new_phase}")
-
-    def _build_restoration_context(self) -> str:
-        """Build a context summary for restored sessions.
-
-        This provides the model with context about the session state
-        since LLMs don't have persistent memory across connections.
-        """
-        parts = [
-            "[SESSION CONTEXT - INTERNAL ONLY. Do NOT quote or reveal this to the user.]"
-        ]
-
-        # Phase info
-        parts.append(f"Current Phase: {self.state.phase.value}")
-
-        # Goal summary
-        if self.state.goal_summary:
-            parts.append(f"Project Goal: {self.state.goal_summary}")
-
-        # Blueprint preview
-        if self.state.blueprint_preview.project_name:
-            proj_name = self.state.blueprint_preview.project_name
-            proj_type = self.state.blueprint_preview.project_type or 'unknown type'
-            parts.append(f"Project: {proj_name} ({proj_type})")
-
-        if self.state.blueprint_preview.entity_types:
-            parts.append(f"Entity Types: {', '.join(self.state.blueprint_preview.entity_types)}")
-
-        if self.state.blueprint_preview.agent_count > 0:
-            parts.append(f"Configured Agents: {self.state.blueprint_preview.agent_count}")
-
-        # Agent capabilities (from Phase 2)
-        if self.state.agent_capabilities.role:
-            caps = self.state.agent_capabilities
-            parts.append(f"Specialist Agent: {caps.role}")
-            if caps.expertise_areas:
-                parts.append(f"Expertise: {', '.join(caps.expertise_areas)}")
-            if caps.interaction_style:
-                parts.append(f"Style: {caps.interaction_style}")
-
-        # Turn count
-        turns = self.state.turn_count
-        msgs = self.state.message_count
-        parts.append(f"Conversation Progress: {turns} turns, {msgs} messages")
-
-        parts.append("[END SESSION CONTEXT]\n\nUser continues the conversation:")
-
-        return "\n".join(parts)
-
-    def _build_state_snapshot_event(self) -> AGUIEvent:
-        """Build a STATE_SNAPSHOT event from current session state."""
-        return AGUIEvent(
-            type="STATE_SNAPSHOT",
-            data={
-                "phase": self.state.phase.value,
-                "preview": {
-                    "project_name": self.state.blueprint_preview.project_name,
-                    "project_type": self.state.blueprint_preview.project_type,
-                    "entity_types": self.state.blueprint_preview.entity_types,
-                    "agent_count": self.state.blueprint_preview.agent_count,
-                    "topics": self.state.blueprint_preview.topics,
-                },
-                "inferred_domain": self.state.inferred_domain,
-                "debug": {
-                    "thinking": None,
-                    "approach": None,
-                    "turn_count": self.state.turn_count,
-                    "message_count": self.state.message_count,
-                    "domain_confidence": self.state.domain_confidence,
-                    "discussed_topics": self.state.discussed_topics,
-                }
-            }
-        )
-
-    def _create_subagents(self) -> dict[str, AgentDefinition]:
-        """Define phase-based subagents.
-
-        All subagents fetch their hydrated prompts dynamically via mcp__clara__get_prompt.
-        This ensures placeholders like {{goal}} and {{role}} are filled from session state.
-        """
-        # Phase 1 can use static prompt since no prior context needed
-        phase1_prompt = load_prompt("phase1_goal_understanding.txt")
-
-        # Phase 2 fetches hydrated prompt to get {{goal}} from Phase 1
-        phase2_prompt = """You are configuring a specialist interview agent.
-
-First, call mcp__clara__get_prompt with phase="agent_configuration" to get your
-full instructions with the project goal.
-
-Then follow those instructions to:
-1. Analyze the goal
-2. Design the specialist agent configuration
-3. Call mcp__clara__agent_summary to save the config
-4. Call mcp__clara__hydrate_phase3 with the config
-5. Transition to blueprint_design phase
-"""
-
-        # Phase 3 fetches hydrated prompt and MUST use ask tool interactively
-        phase3_prompt = """You are Clara, designing an Interview Blueprint interactively.
-
-CRITICAL INSTRUCTION: You MUST use mcp__clara__ask for EVERY decision point.
-Do NOT proceed to build anything until you have collected user input via ask tool.
-
-Step 1: First, call mcp__clara__get_prompt with phase="blueprint_design" to get
-your full context.
-Step 2: Then call mcp__clara__ask to ask the user what knowledge they want to
-extract from interviews.
-Step 3: Wait for user response. Do NOT call entity/agent/project tools until user confirms via ask.
-
-Your ONLY job in this turn is:
-1. Call get_prompt to get context
-2. Call ask tool to collect what knowledge the user wants to gather
-3. Stop and wait for response
-
-DO NOT build entities, agents, or projects until the user has responded to your ask tool questions.
-"""
-
-        return {
-            "phase1-goal-discovery": AgentDefinition(
-                description=(
-                    "Handles Phase 1: Goal Confirmation. "
-                    "Use this agent to discover the user's project through "
-                    "natural conversation. It will explore the core discovery areas "
-                    "and use mcp__clara__ask for structured choices. "
-                    "After completing, call mcp__clara__hydrate_phase2."
-                ),
-                tools=[
-                    "mcp__clara__ask",
-                    "mcp__clara__request_selection_list",
-                    "mcp__clara__request_data_table",
-                    "mcp__clara__request_process_map",
-                    "mcp__clara__project",
-                    "mcp__clara__save_goal_summary",
-                    "mcp__clara__hydrate_phase2",
-                    "mcp__clara__phase",
-                    "mcp__clara__get_prompt",
-                ],
-                prompt=phase1_prompt,
-                model="sonnet"
-            ),
-            "phase2-agent-config": AgentDefinition(
-                description=(
-                    "Handles Phase 2: Agent Configuration. "
-                    "First call mcp__clara__get_prompt to get hydrated instructions with the goal. "
-                    "Then configure the specialist agent and call mcp__clara__hydrate_phase3."
-                ),
-                tools=[
-                    "mcp__clara__agent_summary",
-                    "mcp__clara__phase",
-                    "mcp__clara__get_prompt",
-                    "mcp__clara__hydrate_phase3",
-                    "mcp__clara__request_selection_list",
-                    "mcp__clara__request_data_table",
-                    "mcp__clara__request_process_map",
-                ],
-                prompt=phase2_prompt,
-                model="sonnet"
-            ),
-            "phase3-blueprint-design": AgentDefinition(
-                description=(
-                    "Handles Phase 3: Blueprint Design INTERACTIVELY. "
-                    "First call mcp__clara__get_prompt to get hydrated instructions. "
-                    "This agent MUST use mcp__clara__ask to collect user input "
-                    "before building. It should NOT build entities/agents until "
-                    "user confirms via ask tool responses. "
-                    "Use mcp__clara__prompt_editor for editing prompts. "
-                    "Use mcp__clara__get_agent_context for context files."
-                ),
-                tools=[
-                    "mcp__clara__project",
-                    "mcp__clara__entity",
-                    "mcp__clara__agent",
-                    "mcp__clara__ask",
-                    "mcp__clara__request_selection_list",
-                    "mcp__clara__request_data_table",
-                    "mcp__clara__request_process_map",
-                    "mcp__clara__preview",
-                    "mcp__clara__phase",
-                    "mcp__clara__get_prompt",
-                    "mcp__clara__prompt_editor",
-                    "mcp__clara__get_agent_context",
-                ],
-                prompt=phase3_prompt,
-                model="sonnet"
-            ),
-        }
-
-    def _create_hooks(self) -> dict:
-        """Create hooks for tracking agent activity."""
-        response_queue = self._response_queue
-
-        async def pre_tool_hook(
-            input_data: dict[str, Any],
-            tool_use_id: str | None,
-            context: Any
-        ) -> dict[str, Any]:
-            """Track tool usage before execution."""
-            # Log full input_data to understand structure
-            logger.info(f"[PreToolUse] input_data keys: {list(input_data.keys())}")
-            logger.info(f"[PreToolUse] full input_data: {input_data}")
-            tool_name = input_data.get("tool_name", input_data.get("name", "unknown"))
-            tool_input = input_data.get("tool_input", input_data.get("input", {}))
-            logger.info(f"[PreToolUse] {tool_name}: {tool_input}")
-            await response_queue.put(AGUIEvent(
-                type="TOOL_CALL_START",
-                data={"tool": tool_name, "input": tool_input}
-            ))
-
-            if tool_name in {
-                "mcp__clara__request_data_table",
-                "mcp__clara__request_process_map",
-                "mcp__clara__request_selection_list",
-            }:
-                normalized_tool = tool_name.replace("mcp__clara__", "")
-                self.router_state.pending_tool = normalized_tool
-                self.router_state.last_tool = normalized_tool
-                self.router_state.last_tool_status = "open"
-
-            # Special handling for ask tool - emit CUSTOM event with UI component
-            if tool_name == "mcp__clara__ask":
-                options = sanitize_ask_options(tool_input.get("options", []))
-                ui_component = {
-                    "type": "user_input_required",
-                    "question": tool_input.get("question", ""),
-                    "options": options,
-                    "multi_select": tool_input.get("multi_select", False),
-                }
-                # Emit as CUSTOM AG-UI event for reliable rendering
-                await response_queue.put(AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": "clara:ask", "value": ui_component}
-                ))
-                self._ui_emitted_in_turn = True
-                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:ask")
-
-            if tool_name == "mcp__clara__request_selection_list":
-                options = ensure_other_option(sanitize_ask_options(tool_input.get("options", [])))
-                ui_component = {
-                    "type": "user_input_required",
-                    "question": tool_input.get("question", ""),
-                    "options": options,
-                    "multi_select": tool_input.get("multi_select", False),
-                }
-                await response_queue.put(AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": "clara:ask", "value": ui_component}
-                ))
-                self._ui_emitted_in_turn = True
-                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:ask (selection list)")
-
-            # Special handling for prompt_editor tool - emit CUSTOM event for editable prompt
-            if tool_name == "mcp__clara__prompt_editor":
-                ui_component = {
-                    "type": "prompt_editor",
-                    "title": tool_input.get("title", "System Prompt"),
-                    "prompt": tool_input.get("prompt", ""),
-                    "description": tool_input.get("description", ""),
-                }
-                # Emit as CUSTOM AG-UI event for editable prompt UI
-                await response_queue.put(AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": "clara:prompt_editor", "value": ui_component}
-                ))
-                self._ui_emitted_in_turn = True
-                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:prompt_editor")
-
-            if tool_name == "mcp__clara__request_data_table":
-                ui_component = {
-                    "type": "data_table",
-                    "title": tool_input.get("title", "Data Table"),
-                    "columns": tool_input.get("columns", []),
-                    "min_rows": tool_input.get("min_rows", 3),
-                    "starter_rows": tool_input.get("starter_rows", 3),
-                    "input_modes": tool_input.get("input_modes", ["paste", "inline"]),
-                    "summary_prompt": tool_input.get("summary_prompt", ""),
-                }
-                await response_queue.put(AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": "clara:data_table", "value": ui_component}
-                ))
-                self._ui_emitted_in_turn = True
-                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:data_table")
-
-            if tool_name == "mcp__clara__request_process_map":
-                ui_component = {
-                    "type": "process_map",
-                    "title": tool_input.get("title", "Process Map"),
-                    "required_fields": tool_input.get("required_fields", []),
-                    "edge_types": tool_input.get("edge_types", []),
-                    "min_steps": tool_input.get("min_steps", 3),
-                    "seed_nodes": tool_input.get("seed_nodes", []),
-                }
-                await response_queue.put(AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": "clara:process_map", "value": ui_component}
-                ))
-                self._ui_emitted_in_turn = True
-                logger.info(f"[{self.session_id}] Emitted CUSTOM event clara:process_map")
-
-            # Note: agent_summary tool stores config in state but no longer emits UI card
-
-            return {}  # No modifications to tool behavior
-
-        async def post_tool_hook(
-            input_data: dict[str, Any],
-            tool_use_id: str | None,
-            context: Any
-        ) -> dict[str, Any]:
-            """Track tool completion."""
-            tool_name = input_data.get("tool_name", "unknown")
-            logger.debug(f"[PostToolUse] {tool_name} completed")
-            await response_queue.put(AGUIEvent(
-                type="TOOL_CALL_END",
-                data={"tool": tool_name}
-            ))
-            return {}
-
-        return {
-            'PreToolUse': [
-                HookMatcher(
-                    matcher=None,  # Match all tools
-                    hooks=[pre_tool_hook]
-                )
-            ],
-            'PostToolUse': [
-                HookMatcher(
-                    matcher=None,
-                    hooks=[post_tool_hook]
-                )
-            ]
-        }
+    @_first_message_sent.setter
+    def _first_message_sent(self, value: bool) -> None:
+        self._orchestrator._first_message_sent = value
 
     async def start(self) -> None:
         """Start the design assistant session."""
-        if self._running:
-            return
-
-        orchestrator_prompt = load_prompt("interview_orchestrator.txt")
-        agents = self._create_subagents()
-        hooks = self._create_hooks()
-
-        # Create MCP server with custom tools bound to this session
-        clara_mcp_server = create_clara_tools(self.session_id)
-
-        # Register phase change callback to keep session state in sync with tool state
-        tool_state = get_session_state(self.session_id)
-        tool_state["_on_phase_change"] = self._on_phase_change
-
-        options = ClaudeAgentOptions(
-            permission_mode="bypassPermissions",
-            system_prompt=orchestrator_prompt,
-            allowed_tools=["Task"] + CLARA_TOOL_NAMES,  # Task for subagents + custom tools
-            agents=agents,
-            hooks=hooks,
-            mcp_servers={"clara": clara_mcp_server},  # Register our custom MCP server
-            model="sonnet"
-        )
-
-        self.client = ClaudeSDKClient(options=options)
-        await self.client.__aenter__()
-        self._running = True
-        logger.info(f"Design session {self.session_id} started with Clara tools")
+        await self._orchestrator.start()
 
     async def stop(self) -> None:
         """Stop the design assistant session."""
-        if self.client and self._running:
-            await self.client.__aexit__(None, None, None)
-            self._running = False
-            # Clean up in-memory tool state
-            clear_session_state(self.session_id)
-            logger.info(f"Design session {self.session_id} stopped")
+        await self._orchestrator.stop()
 
     async def send_message(self, message: str) -> AsyncIterator[AGUIEvent]:
         """Send a message and stream the response as AG-UI events."""
-        if not self._running or not self.client:
-            raise RuntimeError("Session not started")
-
-        self._ui_emitted_in_turn = False
-        self.state.message_count += 1
-        self.state.turn_count += 1
-
-        # Sync state from tools before emitting snapshot
-        self._sync_state_from_tools()
-
-        submission = parse_ui_submission(message)
-        if submission:
-            self.router_state.last_tool = submission.kind
-            self.router_state.last_tool_status = "completed"
-            self.router_state.pending_tool = None
-            self.router_state.pending_payload = None
-            message = summarize_ui_submission(submission)
-
-        if (
-            not submission
-            and self.router_state.pending_tool == "request_selection_list"
-            and is_tool_reply(message)
-        ):
-            self.router_state.last_tool_status = "completed"
-            self.router_state.pending_tool = None
-            self.router_state.pending_payload = None
-
-        if (
-            not submission
-            and self.router_state.pending_tool
-            and is_cancel_intent(message)
-        ):
-            self.router_state.last_tool_status = "canceled"
-            self.router_state.pending_tool = None
-            self.router_state.pending_payload = None
-
-        # For restored sessions, prepend context on first message
-        actual_message = message
-        if self._restored and not self._first_message_sent:
-            context = self._build_restoration_context()
-            actual_message = f"{context}\n\n{message}"
-            self._first_message_sent = True
-            logger.info(f"[{self.session_id}] Prepending restoration context to first message")
-
-        # Emit state snapshot at start of turn
-        yield self._build_state_snapshot_event()
-
-        if not submission:
-            decision = None
-            if self.state.phase != DesignPhase.GOAL_UNDERSTANDING:
-                decision = await self.router.decide(
-                    message=message,
-                    state=self.router_state,
-                    phase=self.state.phase.value,
-                    flow="design_assistant",
-                    allow_selection=False,
-                )
-
-            if decision and decision.action in {"tool", "clarify"}:
-                preamble = ""
-                if decision.action == "tool":
-                    ui_component = build_ui_component(decision)
-                    if not ui_component:
-                        decision = None
-                    else:
-                        tool_name_map = {
-                            "request_data_table": "mcp__clara__request_data_table",
-                            "request_process_map": "mcp__clara__request_process_map",
-                            "request_selection_list": "mcp__clara__request_selection_list",
-                        }
-                        tool_name = tool_name_map.get(
-                            decision.tool_name, "mcp__clara__request_data_table"
-                        )
-                        if decision.tool_name == "request_data_table":
-                            preamble = "Let's capture that in a table."
-                        elif decision.tool_name == "request_process_map":
-                            preamble = "Let's map the steps so we capture the workflow accurately."
-                        elif decision.tool_name == "request_selection_list":
-                            preamble = "Pick the options that apply."
-                        tool_state = get_session_state(self.session_id)
-                        tool_state["pending_ui_component"] = ui_component
-                        self.router_state.pending_tool = decision.tool_name
-                        self.router_state.pending_payload = decision.params
-                        self.router_state.last_tool = decision.tool_name
-                        self.router_state.last_tool_status = "open"
-
-                        yield AGUIEvent(
-                            type="TOOL_CALL_START",
-                            data={"tool": tool_name, "input": decision.params or {}}
-                        )
-                        yield AGUIEvent(
-                            type="TEXT_MESSAGE_CONTENT",
-                            data={"delta": preamble}
-                        )
-                        yield AGUIEvent(
-                            type="CUSTOM",
-                            data={
-                                "name": (
-                                    "clara:data_table"
-                                    if decision.tool_name == "request_data_table"
-                                    else "clara:process_map"
-                                    if decision.tool_name == "request_process_map"
-                                    else "clara:ask"
-                                ),
-                                "value": ui_component,
-                            }
-                        )
-                        yield AGUIEvent(
-                            type="TOOL_CALL_END",
-                            data={"tool": tool_name}
-                        )
-                        yield AGUIEvent(type="TEXT_MESSAGE_END", data={})
-                        yield self._build_state_snapshot_event()
-                        return
-
-                if decision and decision.action == "clarify":
-                    self.router_state.last_clarify = decision.clarifying_question
-                    yield AGUIEvent(
-                        type="TEXT_MESSAGE_CONTENT",
-                        data={"delta": decision.clarifying_question or "Can you clarify?"}
-                    )
-                    yield AGUIEvent(type="TEXT_MESSAGE_END", data={})
-                    yield self._build_state_snapshot_event()
-                    return
-
-        # Send message to agent (uses actual_message which may include restoration context)
-        await self.client.query(prompt=actual_message)
-
-        # Helper to drain queued events from hooks
-        async def drain_queue():
-            """Yield any events queued by hooks."""
-            while not self._response_queue.empty():
-                try:
-                    event = self._response_queue.get_nowait()
-                    yield event
-                except asyncio.QueueEmpty:
-                    break
-
-        # Stream response
-        use_structured_output = self._structured_output_parser.is_available()
-        current_text = ""
-        async for msg in self.client.receive_response():
-            # First, drain any events queued by hooks
-            async for event in drain_queue():
-                yield event
-
-            msg_type = type(msg).__name__
-            logger.debug(f"[{self.session_id}] Message type: {msg_type}, attrs: {dir(msg)}")
-
-            if msg_type == 'AssistantMessage':
-                # Extract text content from the message
-                if hasattr(msg, 'content'):
-                    for block in msg.content:
-                        if hasattr(block, 'text'):
-                            new_text = block.text
-                            if new_text and new_text != current_text:
-                                # Check if this is a continuation or a new message
-                                # If new_text starts with current_text, it's a continuation
-                                # Otherwise, it's a new message (e.g., after a tool call)
-                                if current_text and new_text.startswith(current_text):
-                                    # Continuation - emit just the delta
-                                    delta = new_text[len(current_text):]
-                                else:
-                                    # New message - emit the full text
-                                    delta = new_text
-                                current_text = new_text
-                                if delta and not use_structured_output:
-                                    yield AGUIEvent(
-                                        type="TEXT_MESSAGE_CONTENT",
-                                        data={"delta": delta}
-                                    )
-
-            elif msg_type == 'ToolUseMessage':
-                # Tool being used
-                if hasattr(msg, 'name') and hasattr(msg, 'input'):
-                    yield AGUIEvent(
-                        type="TOOL_CALL_START",
-                        data={"tool": msg.name, "input": msg.input}
-                    )
-
-            elif msg_type == 'ToolResultMessage':
-                # Tool completed - extract and stream any text content
-                tool_text = ""
-                logger.info(f"[{self.session_id}] ToolResultMessage: {msg}")
-                if hasattr(msg, 'content'):
-                    # Content can be a list of blocks or a string
-                    content = msg.content
-                    logger.info(
-                        f"[{self.session_id}] Tool content: {type(content)}"
-                    )
-                    if isinstance(content, list):
-                        for block in content:
-                            if hasattr(block, 'text'):
-                                tool_text += block.text
-                            elif isinstance(block, dict) and 'text' in block:
-                                tool_text += block['text']
-                    elif isinstance(content, str):
-                        tool_text = content
-                # Also check for 'result' attribute
-                elif hasattr(msg, 'result'):
-                    result = msg.result
-                    logger.info(f"[{self.session_id}] Tool result: {type(result)}")
-                    if isinstance(result, str):
-                        tool_text = result
-                    elif isinstance(result, dict) and 'content' in result:
-                        for block in result['content']:
-                            if isinstance(block, dict) and 'text' in block:
-                                tool_text += block['text']
-
-                tool_preview = tool_text[:100] if tool_text else 'empty'
-                logger.info(f"[{self.session_id}] Extracted tool_text: {tool_preview}")
-
-                # Note: UI components are now handled via CUSTOM events in pre_tool_hook
-                # No need to parse [UI_COMPONENT] markers from tool results
-
-                yield AGUIEvent(
-                    type="TOOL_CALL_END",
-                    data={}
-                )
-
-        # Final drain of any remaining queued events
-        async for event in drain_queue():
+        async for event in self._orchestrator.send_message(message):
             yield event
 
-        if use_structured_output and current_text:
-            structured_response = None
-            ui_payload: dict[str, Any] | None = None
-            selection_decision = None
-            if not self._ui_emitted_in_turn and not self.router_state.pending_tool:
-                structured_response = await self._structured_output_parser.parse(
-                    message=current_text,
-                    phase=self.state.phase.value,
-                    flow="design_assistant",
-                )
-                if structured_response:
-                    ui_payload = ui_component_to_payload(structured_response.ui_component)
 
-            if (
-                not ui_payload
-                and not self._ui_emitted_in_turn
-                and not self.router_state.pending_tool
-            ):
-                selection_decision = infer_selection_from_assistant_output(current_text)
-                if selection_decision:
-                    ui_payload = build_ui_component(selection_decision)
-
-            display_text = (
-                structured_response.display_text
-                if structured_response
-                else current_text
-            )
-            if ui_payload and display_text and ui_payload.get("type") == "user_input_required":
-                cleaned_text = strip_selection_list_from_text(display_text)
-                if cleaned_text:
-                    display_text = cleaned_text
-                elif selection_decision and selection_decision.params:
-                    display_text = (
-                        selection_decision.params.get("question") or display_text
-                    )
-
-            if display_text:
-                yield AGUIEvent(
-                    type="TEXT_MESSAGE_CONTENT",
-                    data={"delta": display_text}
-                )
-
-            if ui_payload:
-                tool_type = ui_payload.get("type")
-                tool_name = "request_selection_list"
-                custom_name = "clara:ask"
-                if tool_type == "data_table":
-                    tool_name = "request_data_table"
-                    custom_name = "clara:data_table"
-                elif tool_type == "process_map":
-                    tool_name = "request_process_map"
-                    custom_name = "clara:process_map"
-
-                tool_state = get_session_state(self.session_id)
-                tool_state["pending_ui_component"] = ui_payload
-                self.router_state.pending_tool = tool_name
-                self.router_state.pending_payload = ui_payload
-                self.router_state.last_tool = tool_name
-                self.router_state.last_tool_status = "open"
-                self._ui_emitted_in_turn = True
-
-                yield AGUIEvent(
-                    type="TOOL_CALL_START",
-                    data={
-                        "tool": f"mcp__clara__{tool_name}",
-                        "input": ui_payload,
-                    }
-                )
-                yield AGUIEvent(
-                    type="CUSTOM",
-                    data={"name": custom_name, "value": ui_payload}
-                )
-                yield AGUIEvent(
-                    type="TOOL_CALL_END",
-                    data={"tool": f"mcp__clara__{tool_name}"}
-                )
-
-        if not use_structured_output and current_text and not self.router_state.pending_tool:
-            selection_decision = infer_selection_from_assistant_output(current_text)
-            if selection_decision:
-                ui_component = build_ui_component(selection_decision)
-                if ui_component:
-                    tool_state = get_session_state(self.session_id)
-                    tool_state["pending_ui_component"] = ui_component
-                    self.router_state.pending_tool = selection_decision.tool_name
-                    self.router_state.pending_payload = selection_decision.params
-                    self.router_state.last_tool = selection_decision.tool_name
-                    self.router_state.last_tool_status = "open"
-                    yield AGUIEvent(
-                        type="TOOL_CALL_START",
-                        data={
-                            "tool": "mcp__clara__request_selection_list",
-                            "input": selection_decision.params or {},
-                        }
-                    )
-                    yield AGUIEvent(
-                        type="CUSTOM",
-                        data={"name": "clara:ask", "value": ui_component}
-                    )
-                    yield AGUIEvent(
-                        type="TOOL_CALL_END",
-                        data={"tool": "mcp__clara__request_selection_list"}
-                    )
-
-        # Sync state from tools after all tool calls complete
-        self._sync_state_from_tools()
-
-        # Emit final state snapshot with any changes from this turn
-        yield self._build_state_snapshot_event()
-
-        # Emit end of message
-        yield AGUIEvent(
-            type="TEXT_MESSAGE_END",
-            data={}
-        )
+@dataclass
+class _SessionWrapper:
+    """Internal wrapper to track both orchestrator and session."""
+    session: DesignAssistantSession
+    orchestrator: DesignOrchestrator
 
 
 class DesignAssistantManager:
@@ -953,8 +170,6 @@ class DesignAssistantManager:
         This creates a new in-memory session and populates it with
         the state from the database record.
         """
-        from clara.agents.tools import get_session_state
-
         # If session already exists in memory, return it
         if session_id in self._sessions:
             return self._sessions[session_id]
