@@ -321,6 +321,7 @@ export function useDesignSession({
     async (message: string) => {
       if (!sessionId || isStreaming) return;
 
+      setPendingUIComponent(null);
       setIsStreaming(true);
       setError(null);
 

@@ -4,22 +4,45 @@
 
 import { useMemo } from 'react';
 import clsx from 'clsx';
-import type { ChatMessage as ChatMessageType, AskUIComponent, AgentConfiguredUIComponent, PromptEditorUIComponent, UIComponent } from '../../types/design-session';
+import type {
+  ChatMessage as ChatMessageType,
+  AskUIComponent,
+  AgentConfiguredUIComponent,
+  PromptEditorUIComponent,
+  DataTableUIComponent,
+  ProcessMapUIComponent,
+  DataTableSubmission,
+  ProcessMapSubmission,
+  UIComponent,
+} from '../../types/design-session';
 import { parseUIComponent, stripUIComponentMarkers } from '../../types/design-session';
 import { OptionCards } from './OptionCards';
 import { AgentConfiguredCard } from './AgentConfiguredCard';
 import { PromptEditor } from './PromptEditor';
+import { DataTableCapture } from './DataTableCapture';
+import { ProcessMapBuilder } from './ProcessMapBuilder';
 
 interface ChatMessageProps {
   message: ChatMessageType;
   onOptionSelect?: (optionId: string) => void;
   /** Callback when user saves an edited prompt */
   onPromptSave?: (editedPrompt: string) => void;
+  /** Callback when user submits a data table */
+  onTableSubmit?: (payload: DataTableSubmission) => void;
+  /** Callback when user submits a process map */
+  onProcessMapSubmit?: (payload: ProcessMapSubmission) => void;
   /** UI component from CUSTOM event - takes precedence over text parsing */
   externalUIComponent?: UIComponent | null;
 }
 
-export function ChatMessage({ message, onOptionSelect, onPromptSave, externalUIComponent }: ChatMessageProps) {
+export function ChatMessage({
+  message,
+  onOptionSelect,
+  onPromptSave,
+  onTableSubmit,
+  onProcessMapSubmit,
+  externalUIComponent,
+}: ChatMessageProps) {
   const isUser = message.role === 'user';
 
   // Parse any UI components from the message
@@ -125,6 +148,35 @@ export function ChatMessage({ message, onOptionSelect, onPromptSave, externalUIC
               prompt={(uiComponent as PromptEditorUIComponent).prompt}
               description={(uiComponent as PromptEditorUIComponent).description}
               onSave={onPromptSave}
+            />
+          </div>
+        )}
+
+        {/* Data table capture (bulk entry) */}
+        {uiComponent && uiComponent.type === 'data_table' && onTableSubmit && (
+          <div className="mt-4">
+            <DataTableCapture
+              title={(uiComponent as DataTableUIComponent).title}
+              columns={(uiComponent as DataTableUIComponent).columns}
+              minRows={(uiComponent as DataTableUIComponent).min_rows}
+              starterRows={(uiComponent as DataTableUIComponent).starter_rows}
+              inputModes={(uiComponent as DataTableUIComponent).input_modes}
+              summaryPrompt={(uiComponent as DataTableUIComponent).summary_prompt}
+              onSubmit={onTableSubmit}
+            />
+          </div>
+        )}
+
+        {/* Process map builder */}
+        {uiComponent && uiComponent.type === 'process_map' && onProcessMapSubmit && (
+          <div className="mt-4">
+            <ProcessMapBuilder
+              title={(uiComponent as ProcessMapUIComponent).title}
+              requiredFields={(uiComponent as ProcessMapUIComponent).required_fields}
+              edgeTypes={(uiComponent as ProcessMapUIComponent).edge_types}
+              minSteps={(uiComponent as ProcessMapUIComponent).min_steps}
+              seedNodes={(uiComponent as ProcessMapUIComponent).seed_nodes}
+              onSubmit={onProcessMapSubmit}
             />
           </div>
         )}

@@ -21,9 +21,28 @@ export function OptionCards({
 }: OptionCardsProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [customInputs, setCustomInputs] = useState<Record<string, string>>({});
+
+  const optionRequiresInput = (option: AskOption) => {
+    if (typeof option.requires_input === 'boolean') {
+      return option.requires_input;
+    }
+    return option.label.trim().toLowerCase().startsWith('other');
+  };
+
+  const selectedOptions = options.filter((option) => selectedIds.has(option.id));
+  const optionsRequiringInput = selectedOptions.filter(optionRequiresInput);
+  const allRequiredFilled = optionsRequiringInput.every(
+    (option) => (customInputs[option.id] || '').trim().length > 0
+  );
+  const canSubmit = selectedIds.size > 0 && allRequiredFilled;
 
   const handleOptionClick = (optionId: string) => {
     if (isSubmitted) return;
+
+    const selectedOption = options.find((opt) => opt.id === optionId);
+    const requiresInput = selectedOption ? optionRequiresInput(selectedOption) : false;
+    const wasSelected = selectedIds.has(optionId);
 
     if (multiSelect) {
       setSelectedIds((prev) => {
@@ -35,21 +54,35 @@ export function OptionCards({
         }
         return next;
       });
+      if (wasSelected) {
+        setCustomInputs((prev) => {
+          const next = { ...prev };
+          delete next[optionId];
+          return next;
+        });
+      }
     } else {
+      setSelectedIds(new Set([optionId]));
+      if (requiresInput) {
+        return;
+      }
       // Single select - immediately submit with label (not ID)
       setIsSubmitted(true);
-      const selectedOption = options.find((opt) => opt.id === optionId);
       onSelect(selectedOption?.label || optionId);
+      setCustomInputs({});
     }
   };
 
   const handleSubmit = () => {
-    if (selectedIds.size === 0) return;
+    if (!canSubmit) return;
     setIsSubmitted(true);
-    // Send labels (not IDs) for multi-select
-    const selectedLabels = options
-      .filter((opt) => selectedIds.has(opt.id))
-      .map((opt) => opt.label);
+    const selectedLabels = selectedOptions.map((option) => {
+      if (optionRequiresInput(option)) {
+        const value = (customInputs[option.id] || '').trim();
+        return value ? `${option.label}: ${value}` : option.label;
+      }
+      return option.label;
+    });
     onSelect(selectedLabels.join(', '));
   };
 
@@ -118,14 +151,37 @@ export function OptionCards({
         })}
       </div>
 
+      {optionsRequiringInput.length > 0 && (
+        <div className="space-y-2">
+          {optionsRequiringInput.map((option) => (
+            <div key={option.id} className="space-y-1">
+              <label className="text-sm font-medium text-gray-700">
+                Please specify {option.label}
+              </label>
+              <input
+                type="text"
+                value={customInputs[option.id] || ''}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setCustomInputs((prev) => ({ ...prev, [option.id]: value }));
+                }}
+                disabled={isSubmitted}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
+                placeholder="Type your answer"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Submit button for multi-select */}
-      {multiSelect && !isSubmitted && (
+      {(multiSelect || optionsRequiringInput.length > 0) && !isSubmitted && (
         <button
           onClick={handleSubmit}
-          disabled={selectedIds.size === 0}
+          disabled={!canSubmit}
           className={clsx(
             'w-full py-2 px-4 rounded-lg font-medium transition-colors',
-            selectedIds.size > 0
+            canSubmit
               ? 'bg-blue-600 text-white hover:bg-blue-700'
               : 'bg-gray-100 text-gray-400 cursor-not-allowed'
           )}

@@ -12,6 +12,7 @@ import {
   BlueprintSidebar,
   DebugPanel,
 } from '../components/design-assistant';
+import type { DataTableSubmission, ProcessMapSubmission } from '../types/design-session';
 
 export function DesignAssistantPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -63,6 +64,20 @@ export function DesignAssistantPage() {
   const handleOptionSelect = (optionId: string) => {
     clearPendingUIComponent(); // Clear UI component when user interacts
     sendMessage(`I chose: ${optionId}`);
+  };
+
+  const handleTableSubmit = (payload: DataTableSubmission) => {
+    clearPendingUIComponent();
+    sendMessage(
+      `[DATA_TABLE_SUBMIT]${JSON.stringify(payload)}[/DATA_TABLE_SUBMIT]`
+    );
+  };
+
+  const handleProcessMapSubmit = (payload: ProcessMapSubmission) => {
+    clearPendingUIComponent();
+    sendMessage(
+      `[PROCESS_MAP_SUBMIT]${JSON.stringify(payload)}[/PROCESS_MAP_SUBMIT]`
+    );
   };
 
   const handlePromptSave = (editedPrompt: string) => {
@@ -298,6 +313,8 @@ export function DesignAssistantPage() {
                       key={message.id}
                       message={message}
                       onOptionSelect={handleOptionSelect}
+                      onTableSubmit={handleTableSubmit}
+                      onProcessMapSubmit={handleProcessMapSubmit}
                       onPromptSave={handlePromptSave}
                       externalUIComponent={isLastAssistantMessage ? pendingUIComponent : null}
                     />

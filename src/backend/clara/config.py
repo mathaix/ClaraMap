@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     simulation_interviewer_model: str = "sonnet"
     simulation_user_model: str = "haiku"
     web_search_model: str = "claude-sonnet-4-20250514"
+    router_model: str = "haiku"
 
     # Anthropic API (uses ANTHROPIC_API_KEY env var by default)
     anthropic_api_key: str | None = None

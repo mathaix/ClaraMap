@@ -18,6 +18,16 @@ import anthropic
 import httpx
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+from clara.agents.router import (
+    RouterState,
+    UIRouter,
+    build_ui_component,
+    infer_selection_from_assistant_output,
+    is_cancel_intent,
+    is_tool_reply,
+    parse_ui_submission,
+    summarize_ui_submission,
+)
 from clara.config import settings
 
 logger = logging.getLogger(__name__)
@@ -71,6 +81,8 @@ class SimulationSession:
     model: str = field(default_factory=lambda: settings.simulation_interviewer_model)
     persona: PersonaConfig | None = None  # For auto-simulation mode
     messages: list[dict] = field(default_factory=list)
+    router_state: RouterState = field(default_factory=RouterState)
+    router: UIRouter = field(default_factory=UIRouter)
 
     # Timestamps for TTL cleanup
     created_at: datetime = field(default_factory=datetime.now)
@@ -221,7 +233,11 @@ class SimulationSession:
 
         yield AGUIEvent(type="TEXT_MESSAGE_END", data={"role": "assistant"})
 
-    async def send_user_message(self, user_message: str) -> AsyncGenerator[AGUIEvent, None]:
+    async def send_user_message(
+        self,
+        user_message: str,
+        apply_router: bool = True
+    ) -> AsyncGenerator[AGUIEvent, None]:
         """Send a message from the user (human or simulated) and get the interviewer's response."""
         if not self._running or not self._interviewer_client:
             raise RuntimeError("Session not started")
@@ -229,12 +245,106 @@ class SimulationSession:
         # Update last activity
         self.last_activity = datetime.now()
 
+        submission = parse_ui_submission(user_message)
+        if submission:
+            self.router_state.last_tool = submission.kind
+            self.router_state.last_tool_status = "completed"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
+            user_message = summarize_ui_submission(submission)
+
+        if (
+            not submission
+            and self.router_state.pending_tool == "request_selection_list"
+            and is_tool_reply(user_message)
+        ):
+            self.router_state.last_tool_status = "completed"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
+
+        if (
+            not submission
+            and self.router_state.pending_tool
+            and is_cancel_intent(user_message)
+        ):
+            self.router_state.last_tool_status = "canceled"
+            self.router_state.pending_tool = None
+            self.router_state.pending_payload = None
+
         # Store user message
         self.messages.append({"role": "user", "content": user_message})
 
         # Limit message history
         if len(self.messages) > MAX_MESSAGE_HISTORY:
             self.messages = self.messages[-MAX_MESSAGE_HISTORY:]
+
+        if apply_router and not submission:
+            decision = await self.router.decide(
+                message=user_message,
+                state=self.router_state,
+                phase="interview",
+                flow="simulation",
+                allow_selection=False,
+            )
+
+            if decision.action in {"tool", "clarify"}:
+                preamble = ""
+                if decision.action == "tool":
+                    ui_component = build_ui_component(decision)
+                    if ui_component:
+                        if decision.tool_name == "request_data_table":
+                            preamble = (
+                                "Let's capture that in a table so you can paste rows quickly."
+                            )
+                        elif decision.tool_name == "request_process_map":
+                            preamble = (
+                                "Let's map the steps so we capture the workflow accurately."
+                            )
+                        elif decision.tool_name == "request_selection_list":
+                            preamble = "Pick the options that apply."
+
+                        self.router_state.pending_tool = decision.tool_name
+                        self.router_state.pending_payload = decision.params
+                        self.router_state.last_tool = decision.tool_name
+                        self.router_state.last_tool_status = "open"
+
+                        self.messages.append({"role": "assistant", "content": preamble})
+                        if len(self.messages) > MAX_MESSAGE_HISTORY:
+                            self.messages = self.messages[-MAX_MESSAGE_HISTORY:]
+
+                        yield AGUIEvent(
+                            type="TEXT_MESSAGE_CONTENT",
+                            data={"delta": preamble, "role": "assistant"}
+                        )
+                        yield AGUIEvent(
+                            type="CUSTOM",
+                            data={
+                                "name": (
+                                    "clara:data_table"
+                                    if decision.tool_name == "request_data_table"
+                                    else "clara:process_map"
+                                    if decision.tool_name == "request_process_map"
+                                    else "clara:ask"
+                                ),
+                                "value": ui_component,
+                            },
+                        )
+                        yield AGUIEvent(type="TEXT_MESSAGE_END", data={"role": "assistant"})
+                        return
+
+                if decision.action == "clarify":
+                    question = decision.clarifying_question or "Can you clarify?"
+                    self.router_state.last_clarify = question
+                    self.messages.append({"role": "assistant", "content": question})
+                    if len(self.messages) > MAX_MESSAGE_HISTORY:
+                        self.messages = self.messages[-MAX_MESSAGE_HISTORY:]
+
+                    yield AGUIEvent(
+                        type="TEXT_MESSAGE_CONTENT",
+                        data={"delta": question, "role": "assistant"}
+                    )
+                    yield AGUIEvent(type="TEXT_MESSAGE_END", data={"role": "assistant"})
+                    return
 
         try:
             await self._interviewer_client.query(prompt=user_message)
@@ -263,6 +373,20 @@ class SimulationSession:
             # Store assistant message
             if current_text:
                 self.messages.append({"role": "assistant", "content": current_text})
+
+            if current_text and not self.router_state.pending_tool:
+                selection_decision = infer_selection_from_assistant_output(current_text)
+                if selection_decision:
+                    ui_component = build_ui_component(selection_decision)
+                    if ui_component:
+                        self.router_state.pending_tool = selection_decision.tool_name
+                        self.router_state.pending_payload = selection_decision.params
+                        self.router_state.last_tool = selection_decision.tool_name
+                        self.router_state.last_tool_status = "open"
+                        yield AGUIEvent(
+                            type="CUSTOM",
+                            data={"name": "clara:ask", "value": ui_component}
+                        )
 
             yield AGUIEvent(type="TEXT_MESSAGE_END", data={"role": "assistant"})
 
@@ -371,6 +495,7 @@ class SimulationSession:
         """Reset conversation history."""
         self.messages = []
         self._introduction_sent = False
+        self.router_state = RouterState()
 
 
 def is_safe_url(url: str) -> bool:

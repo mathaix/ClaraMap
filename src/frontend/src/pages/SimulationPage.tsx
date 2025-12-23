@@ -14,13 +14,13 @@ import {
   deleteSimulation,
   SimulationModel,
 } from '../api/simulation-sessions';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  isStreaming?: boolean;
-}
+import { ChatMessage as ChatMessageBubble } from '../components/design-assistant';
+import type {
+  ChatMessage as ChatMessageType,
+  DataTableSubmission,
+  ProcessMapSubmission,
+  UIComponent,
+} from '../types/design-session';
 
 export function SimulationPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -31,7 +31,8 @@ export function SimulationPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState<SimulationModel>('sonnet');
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessageType[]>([]);
+  const [pendingUIComponent, setPendingUIComponent] = useState<UIComponent | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -89,64 +90,109 @@ export function SimulationPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = useCallback(async () => {
-    if (!sessionId || !inputValue.trim() || isStreaming) return;
+  const sendMessageText = useCallback(
+    async (content: string) => {
+      if (!sessionId || !content.trim() || isStreaming) return;
 
-    const userMessage: Message = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: inputValue.trim(),
-    };
+      setPendingUIComponent(null);
 
-    setMessages((prev) => [...prev, userMessage]);
-    setInputValue('');
-    setIsStreaming(true);
+      const userMessage: ChatMessageType = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: content.trim(),
+        timestamp: new Date(),
+      };
 
-    // Add streaming placeholder
-    const assistantId = `assistant-${Date.now()}`;
-    setMessages((prev) => [
-      ...prev,
-      { id: assistantId, role: 'assistant', content: '', isStreaming: true },
-    ]);
+      setMessages((prev) => [...prev, userMessage]);
+      setIsStreaming(true);
 
-    try {
-      for await (const event of sendSimulationMessage(sessionId, userMessage.content)) {
-        if (event.type === 'TEXT_MESSAGE_CONTENT' && event.delta) {
-          // Use functional update to avoid stale closure - append delta to current content
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? { ...msg, content: msg.content + event.delta }
-                : msg
-            )
-          );
-        } else if (event.type === 'TEXT_MESSAGE_END') {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? { ...msg, isStreaming: false }
-                : msg
-            )
-          );
-        } else if (event.type === 'ERROR') {
-          setError(event.message || 'An error occurred');
+      // Add streaming placeholder
+      const assistantId = `assistant-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: 'assistant', content: '', isStreaming: true, timestamp: new Date() },
+      ]);
+
+      try {
+        for await (const event of sendSimulationMessage(sessionId, userMessage.content)) {
+          if (event.type === 'TEXT_MESSAGE_CONTENT' && event.delta) {
+            // Use functional update to avoid stale closure - append delta to current content
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? { ...msg, content: msg.content + event.delta }
+                  : msg
+              )
+            );
+          } else if (event.type === 'TEXT_MESSAGE_END') {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? { ...msg, isStreaming: false }
+                  : msg
+              )
+            );
+          } else if (event.type === 'CUSTOM') {
+            const value = (event as { value?: UIComponent }).value;
+            if (value) {
+              setPendingUIComponent(value);
+            }
+          } else if (event.type === 'ERROR') {
+            setError(event.message || 'An error occurred');
+          }
         }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
+        // If session not found, prompt user to refresh
+        if (errorMessage.includes('Not Found')) {
+          setError('Session expired. Please refresh the page to start a new simulation.');
+          setSessionId(null);
+        } else {
+          setError(errorMessage);
+        }
+        // Remove streaming message on error
+        setMessages((prev) => prev.filter((msg) => msg.id !== assistantId));
+      } finally {
+        setIsStreaming(false);
       }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
-      // If session not found, prompt user to refresh
-      if (errorMessage.includes('Not Found')) {
-        setError('Session expired. Please refresh the page to start a new simulation.');
-        setSessionId(null);
-      } else {
-        setError(errorMessage);
-      }
-      // Remove streaming message on error
-      setMessages((prev) => prev.filter((msg) => msg.id !== assistantId));
-    } finally {
-      setIsStreaming(false);
-    }
-  }, [sessionId, inputValue, isStreaming]);
+    },
+    [sessionId, isStreaming]
+  );
+
+  const handleSend = useCallback(async () => {
+    if (!inputValue.trim()) return;
+    const content = inputValue.trim();
+    setInputValue('');
+    await sendMessageText(content);
+  }, [inputValue, sendMessageText]);
+
+  const handleTableSubmit = useCallback(
+    async (payload: DataTableSubmission) => {
+      setPendingUIComponent(null);
+      await sendMessageText(
+        `[DATA_TABLE_SUBMIT]${JSON.stringify(payload)}[/DATA_TABLE_SUBMIT]`
+      );
+    },
+    [sendMessageText]
+  );
+
+  const handleProcessMapSubmit = useCallback(
+    async (payload: ProcessMapSubmission) => {
+      setPendingUIComponent(null);
+      await sendMessageText(
+        `[PROCESS_MAP_SUBMIT]${JSON.stringify(payload)}[/PROCESS_MAP_SUBMIT]`
+      );
+    },
+    [sendMessageText]
+  );
+
+  const handleOptionSelect = useCallback(
+    async (selection: string) => {
+      setPendingUIComponent(null);
+      await sendMessageText(`I chose: ${selection}`);
+    },
+    [sendMessageText]
+  );
 
   const handleReset = useCallback(async () => {
     if (!sessionId) return;
@@ -154,6 +200,7 @@ export function SimulationPage() {
     try {
       await resetSimulation(sessionId);
       setMessages([]);
+      setPendingUIComponent(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset');
     }
@@ -284,29 +331,20 @@ export function SimulationPage() {
               </div>
             ) : (
               <div className="space-y-4 max-w-3xl mx-auto">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={clsx(
-                      'flex',
-                      message.role === 'user' ? 'justify-end' : 'justify-start'
-                    )}
-                  >
-                    <div
-                      className={clsx(
-                        'max-w-[80%] rounded-lg px-4 py-3',
-                        message.role === 'user'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-white text-gray-900 border border-gray-200',
-                        message.isStreaming && 'animate-pulse'
-                      )}
-                    >
-                      <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {message.content || (message.isStreaming && '...')}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                {messages.map((message, index) => {
+                  const isLastAssistantMessage =
+                    message.role === 'assistant' && index === messages.length - 1;
+                  return (
+                    <ChatMessageBubble
+                      key={message.id}
+                      message={message}
+                      externalUIComponent={isLastAssistantMessage ? pendingUIComponent : null}
+                      onOptionSelect={handleOptionSelect}
+                      onTableSubmit={handleTableSubmit}
+                      onProcessMapSubmit={handleProcessMapSubmit}
+                    />
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </div>
             )}
