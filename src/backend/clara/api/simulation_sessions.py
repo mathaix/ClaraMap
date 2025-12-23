@@ -35,7 +35,6 @@ router = APIRouter(prefix="/simulation-sessions", tags=["simulation-sessions"])
 class CreateSimulationRequest(BaseModel):
     """Request to create a new simulation session."""
     system_prompt: str = Field(..., min_length=1, max_length=50000)
-    design_session_id: str | None = None  # Optional link to design session
     model: str | None = Field(
         None,
         description="Model to use: sonnet (default), haiku (fast), opus (capable)"
@@ -114,6 +113,8 @@ class PersonaRequest(BaseModel):
     def validate_url(cls, v: str | None) -> str | None:
         if v is not None:
             v = v.strip()
+            if not v:
+                return None  # Treat empty string as None
             if not v.startswith(('http://', 'https://')):
                 raise ValueError("URL must start with http:// or https://")
         return v

@@ -192,15 +192,16 @@ export function AutomatedSimulationPage() {
         } else if (event.type === 'SIMULATION_COMPLETE') {
           setStatus('completed');
         } else if (event.type === 'ERROR') {
-          // Handle error message - backend may send object instead of string at runtime
-          const msg = event.message as string | { message?: string } | undefined;
+          // Robust error extraction from SSE event - handle nested/object messages
+          const rawMsg = (event as unknown as Record<string, unknown>).message;
           let errorMsg: string;
-          if (typeof msg === 'string') {
-            errorMsg = msg;
-          } else if (msg && typeof msg === 'object') {
-            errorMsg = msg.message || JSON.stringify(msg);
+          if (typeof rawMsg === 'string') {
+            errorMsg = rawMsg;
+          } else if (rawMsg && typeof rawMsg === 'object') {
+            const msgObj = rawMsg as Record<string, unknown>;
+            errorMsg = (msgObj.message as string) || (msgObj.detail as string) || JSON.stringify(rawMsg);
           } else {
-            errorMsg = 'An error occurred';
+            errorMsg = 'An error occurred during simulation';
           }
           setError(errorMsg);
           setStatus('error');
@@ -209,7 +210,18 @@ export function AutomatedSimulationPage() {
 
       setStatus('completed');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to start simulation';
+      // Robust error extraction - handle various error shapes
+      let errorMessage: string;
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err && typeof err === 'object') {
+        const errObj = err as Record<string, unknown>;
+        errorMessage = (errObj.message as string) || (errObj.detail as string) || JSON.stringify(err);
+      } else {
+        errorMessage = 'Failed to start simulation';
+      }
       setError(errorMessage);
       setStatus('error');
     } finally {

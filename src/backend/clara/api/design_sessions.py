@@ -240,14 +240,17 @@ async def get_project_agents(
     """Get all agents for a project from the InterviewAgent table.
 
     InterviewAgent is the canonical source of truth for agents.
-    Context files are fetched via the relationship to AgentContextFile.
+    Context files are eagerly loaded via selectinload to avoid N+1.
     """
-    from clara.db.models import AgentContextFile, InterviewAgent
+    from sqlalchemy.orm import selectinload
 
-    # Query InterviewAgent table directly (canonical source)
+    from clara.db.models import InterviewAgent
+
+    # Query with eager loading of context_files (fixes N+1)
     result = await db.execute(
         select(InterviewAgent)
         .where(InterviewAgent.project_id == project_id)
+        .options(selectinload(InterviewAgent.context_files))
         .order_by(InterviewAgent.created_at.asc())
     )
     agents = result.scalars().all()
@@ -255,14 +258,8 @@ async def get_project_agents(
     all_agents: list[ProjectAgentInfo] = []
 
     for idx, agent in enumerate(agents):
-        # Get context files for this agent
-        files_result = await db.execute(
-            select(AgentContextFile)
-            .where(AgentContextFile.agent_id == agent.id)
-            .where(AgentContextFile.deleted_at.is_(None))
-            .order_by(AgentContextFile.created_at.desc())
-        )
-        files = files_result.scalars().all()
+        # Filter out deleted files from eagerly loaded relationship
+        active_files = [f for f in agent.context_files if f.deleted_at is None]
 
         context_files = [
             ContextFileInfo(
@@ -272,8 +269,8 @@ async def get_project_agents(
                 size=f.file_size,
                 uploaded_at=f.created_at.isoformat() if f.created_at else "",
             )
-            for f in files
-        ] if files else None
+            for f in sorted(active_files, key=lambda x: x.created_at or "", reverse=True)
+        ] if active_files else None
 
         all_agents.append(ProjectAgentInfo(
             id=agent.id,
@@ -337,17 +334,34 @@ async def save_agents(
     # Get agent capabilities (shared across all agents in this session)
     agent_capabilities = db_session.agent_capabilities
 
+    # Get existing agent names for this project to avoid duplicates
+    existing_result = await db.execute(
+        select(InterviewAgent.name)
+        .where(InterviewAgent.project_id == db_session.project_id)
+    )
+    existing_names: set[str] = {row[0] for row in existing_result.fetchall()}
+
     created_agent_ids = []
 
     for agent_data in agents_data:
         # Generate agent ID
         agent_id = f"agent_{uuid.uuid4().hex[:16]}"
 
+        # Get name with auto-suffix for duplicates
+        base_name = agent_data.get("name", "Interview Agent")
+        name = base_name
+        if name in existing_names:
+            suffix = 2
+            while f"{base_name} ({suffix})" in existing_names:
+                suffix += 1
+            name = f"{base_name} ({suffix})"
+        existing_names.add(name)
+
         # Create InterviewAgent record
         agent = InterviewAgent(
             id=agent_id,
             project_id=db_session.project_id,
-            name=agent_data.get("name", "Interview Agent"),
+            name=name,
             persona=agent_data.get("persona"),
             topics=agent_data.get("topics", []),
             tone=agent_data.get("tone"),

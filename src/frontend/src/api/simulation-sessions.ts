@@ -8,7 +8,6 @@ export type SimulationModel = 'sonnet' | 'haiku' | 'opus';
 
 export interface CreateSimulationRequest {
   system_prompt: string;
-  design_session_id?: string;
   model?: SimulationModel;
 }
 
@@ -79,30 +78,6 @@ export async function createSimulationFromAgent(
   const url = model
     ? `${API_BASE}/from-agent/${agentId}?model=${model}`
     : `${API_BASE}/from-agent/${agentId}`;
-
-  const response = await fetch(url, {
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `Failed to create simulation: ${response.statusText}`);
-  }
-
-  return response.json();
-}
-
-/**
- * @deprecated Use createSimulationFromAgent instead.
- * Create a simulation session from an existing design session's blueprint.
- */
-export async function createSimulationFromDesignSession(
-  designSessionId: string,
-  model?: SimulationModel
-): Promise<CreateSimulationResponse> {
-  const url = model
-    ? `${API_BASE}/from-design-session/${designSessionId}?model=${model}`
-    : `${API_BASE}/from-design-session/${designSessionId}`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -267,34 +242,6 @@ export async function createAutoSimulationFromAgent(
   if (model) params.set('model', model);
 
   const url = `${API_BASE}/auto/from-agent/${agentId}${params.toString() ? `?${params}` : ''}`;
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(persona),
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `Failed to create auto-simulation: ${response.statusText}`);
-  }
-
-  return response.json();
-}
-
-/**
- * @deprecated Use createAutoSimulationFromAgent instead.
- * Create an automated simulation from a design session's blueprint.
- */
-export async function createAutoSimulationFromDesignSession(
-  designSessionId: string,
-  persona: PersonaConfig,
-  model?: SimulationModel
-): Promise<AutoSimulationResponse> {
-  const params = new URLSearchParams();
-  if (model) params.set('model', model);
-
-  const url = `${API_BASE}/auto/from-design-session/${designSessionId}${params.toString() ? `?${params}` : ''}`;
 
   const response = await fetch(url, {
     method: 'POST',

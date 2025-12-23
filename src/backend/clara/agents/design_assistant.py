@@ -287,7 +287,6 @@ DO NOT build entities, agents, or projects until the user has responded to your 
             context: Any
         ) -> dict[str, Any]:
             """Track tool usage before execution."""
-            import json
             # Log full input_data to understand structure
             logger.info(f"[PreToolUse] input_data keys: {list(input_data.keys())}")
             logger.info(f"[PreToolUse] full input_data: {input_data}")
@@ -672,9 +671,10 @@ class DesignAssistantManager:
         ]
         session.state.blueprint_preview.agent_count = len(blueprint_state.get("agents", []))
 
-        # Restore goal summary
+        # Restore goal summary (handle both goal_text and primary_goal keys)
         if db_session.goal_summary:
-            session.state.goal_summary = db_session.goal_summary.get("goal_text")
+            goal = db_session.goal_summary
+            session.state.goal_summary = goal.get("goal_text") or goal.get("primary_goal")
 
         # Restore agent capabilities
         if db_session.agent_capabilities:

@@ -40,6 +40,7 @@ export function DesignAssistantPage() {
   // Check if we have agents in the blueprint (meaning simulation is available)
   const hasBlueprint = (sessionState?.preview?.agent_count ?? 0) > 0;
   const [isSaving, setIsSaving] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
 
   // Connect on mount
   useEffect(() => {
@@ -89,6 +90,26 @@ export function DesignAssistantPage() {
       alert(err instanceof Error ? err.message : 'Failed to save agents');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSimulate = async () => {
+    if (!sessionId) return;
+
+    try {
+      setIsSimulating(true);
+      // Save agents first, then navigate to simulation with the first agent
+      const result = await saveAgents(sessionId);
+      if (result.agent_ids.length > 0) {
+        navigate(`/projects/${projectId}/simulate?agentId=${result.agent_ids[0]}`);
+      } else {
+        alert('No agents were saved. Please complete the design first.');
+      }
+    } catch (err) {
+      console.error('Failed to save agents for simulation:', err);
+      alert(err instanceof Error ? err.message : 'Failed to save agents');
+    } finally {
+      setIsSimulating(false);
     }
   };
 
@@ -149,12 +170,13 @@ export function DesignAssistantPage() {
             </div>
 
             {hasBlueprint && sessionId && (
-              <Link
-                to={`/projects/${projectId}/simulate?designSessionId=${sessionId}`}
-                className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors"
+              <button
+                onClick={handleSimulate}
+                disabled={isSimulating || isStreaming}
+                className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Simulate Agent
-              </Link>
+                {isSimulating ? 'Saving...' : 'Simulate Agent'}
+              </button>
             )}
 
             {hasBlueprint && sessionId && (

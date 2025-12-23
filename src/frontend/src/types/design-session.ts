@@ -175,7 +175,7 @@ export interface SendMessageRequest {
 // Project-level agent info (from aggregation endpoint)
 export interface ProjectAgentInfo {
   id: string;  // Agent ID (InterviewAgent.id)
-  session_id: string;
+  session_id: string | null;  // May be null if agent was imported or session deleted
   agent_index: number;
   name: string;
   persona: string | null;
