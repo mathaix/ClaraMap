@@ -18,6 +18,7 @@ import type {
   ToolCallStartEvent,
   CustomEvent,
   UIComponent,
+  CardEnvelope,
 } from '../types/design-session';
 
 interface UseDesignSessionOptions {
@@ -39,6 +40,7 @@ interface UseDesignSessionReturn {
 
   // UI component from CUSTOM events
   pendingUIComponent: UIComponent | null;
+  sidebarCards: CardEnvelope[];
 
   // Debug state
   debugEvents: DebugEvent[];
@@ -85,6 +87,7 @@ export function useDesignSession({
     null
   );
   const [pendingUIComponent, setPendingUIComponent] = useState<UIComponent | null>(null);
+  const [sidebarCards, setSidebarCards] = useState<CardEnvelope[]>([]);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
 
   const messageIdCounter = useRef(0);
@@ -172,6 +175,7 @@ export function useDesignSession({
     setError(null);
     clearDebugEvents();
     setPendingUIComponent(null);
+    setSidebarCards([]);
     messageIdCounter.current = 0;
 
     try {
@@ -214,6 +218,7 @@ export function useDesignSession({
     setError(null);
     clearDebugEvents();
     messageIdCounter.current = 0;
+    setSidebarCards([]);
   }, [sessionId, clearDebugEvents]);
 
   const handleEvent = useCallback(
@@ -311,6 +316,9 @@ export function useDesignSession({
 
           // Set the pending UI component for rendering
           setPendingUIComponent(value);
+          if (value?.type === 'user_input_required' && value.cards?.length) {
+            setSidebarCards(value.cards);
+          }
           break;
         }
 
@@ -381,6 +389,7 @@ export function useDesignSession({
     messages,
     sessionState,
     pendingUIComponent,
+    sidebarCards,
     debugEvents,
     connect,
     sendMessage,

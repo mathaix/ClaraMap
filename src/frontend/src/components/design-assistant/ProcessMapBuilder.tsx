@@ -76,7 +76,7 @@ export function ProcessMapBuilder({
 
     const missingRequired = cleanedSteps.some((step) =>
       requiredFields.some((field) => {
-        const value = (step as Record<string, string>)[field] || '';
+        const value = (step as unknown as Record<string, string>)[field] || '';
         return !value.trim();
       })
     );
