@@ -21,6 +21,8 @@ import type {
 } from '../../types/design-session';
 import { parseUIComponent, stripUIComponentMarkers } from '../../types/design-session';
 import { OptionCards } from './OptionCards';
+import { PersonaCardStack } from './CardStack';
+import type { PersonaEntry } from './CardStack';
 import { AgentConfiguredCard } from './AgentConfiguredCard';
 import { PromptEditor } from './PromptEditor';
 import { DataTableCapture } from './DataTableCapture';
@@ -29,6 +31,8 @@ import { ProcessMapBuilder } from './ProcessMapBuilder';
 interface ChatMessageProps {
   message: ChatMessageType;
   onOptionSelect?: (optionId: string) => void;
+  onPersonaSelect?: (persona: PersonaEntry) => void;
+  activePersonaId?: string | null;
   onQuickConfirm?: (answer: 'Yes' | 'No') => void;
   isLastAssistantMessage?: boolean;
   /** Callback when user saves an edited prompt */
@@ -44,6 +48,8 @@ interface ChatMessageProps {
 export function ChatMessage({
   message,
   onOptionSelect,
+  onPersonaSelect,
+  activePersonaId,
   onQuickConfirm,
   isLastAssistantMessage = false,
   onPromptSave,
@@ -116,31 +122,31 @@ export function ChatMessage({
       : 'border-l-2 border-gray-300 pl-3 text-gray-600';
 
     return {
-      p: ({ children }: { children: ReactNode }) => (
+      p: ({ children }: { children?: ReactNode }) => (
         <p className="mb-2 last:mb-0">{children}</p>
       ),
-      ul: ({ children }: { children: ReactNode }) => (
+      ul: ({ children }: { children?: ReactNode }) => (
         <ul className="mb-2 ml-5 list-disc space-y-1 last:mb-0">
           {children}
         </ul>
       ),
-      ol: ({ children }: { children: ReactNode }) => (
+      ol: ({ children }: { children?: ReactNode }) => (
         <ol className="mb-2 ml-5 list-decimal space-y-1 last:mb-0">
           {children}
         </ol>
       ),
-      li: ({ children }: { children: ReactNode }) => (
+      li: ({ children }: { children?: ReactNode }) => (
         <li className="leading-relaxed">{children}</li>
       ),
-      a: ({ children, href }: { children: ReactNode; href?: string }) => (
+      a: ({ children, href }: { children?: ReactNode; href?: string }) => (
         <a href={href} target="_blank" rel="noreferrer" className={linkClass}>
           {children}
         </a>
       ),
-      blockquote: ({ children }: { children: ReactNode }) => (
+      blockquote: ({ children }: { children?: ReactNode }) => (
         <blockquote className={blockquoteClass}>{children}</blockquote>
       ),
-      code: ({ inline, children }: { inline?: boolean; children: ReactNode }) =>
+      code: ({ inline, children }: { inline?: boolean; children?: ReactNode }) =>
         inline ? (
           <code className={inlineCodeClass}>{children}</code>
         ) : (
@@ -212,6 +218,16 @@ export function ChatMessage({
         {/* Interactive UI component - Ask tool (user_input_required) */}
         {uiComponent && uiComponent.type === 'user_input_required' && onOptionSelect && (
           <div className="mt-4">
+            {(uiComponent as AskUIComponent).cards?.length ? (
+              <div className="mb-4">
+                <PersonaCardStack
+                  cards={(uiComponent as AskUIComponent).cards || []}
+                  options={(uiComponent as AskUIComponent).options}
+                  onPersonaSelect={onPersonaSelect}
+                  activePersonaId={activePersonaId}
+                />
+              </div>
+            ) : null}
             <OptionCards
               question={(uiComponent as AskUIComponent).question}
               options={(uiComponent as AskUIComponent).options}

@@ -219,11 +219,35 @@ export interface AskOption {
   requires_input?: boolean;
 }
 
+export interface CardAction {
+  id: string;
+  label: string;
+  style?: string;
+}
+
+export interface CardHelper {
+  why_this?: string[];
+  risks_if_skipped?: string[];
+}
+
+export type CardBody = Record<string, unknown> | string | Array<unknown>;
+
+export interface CardEnvelope {
+  card_id: string;
+  type: string;
+  title: string;
+  subtitle?: string | null;
+  body: CardBody;
+  actions?: CardAction[];
+  helper?: CardHelper;
+}
+
 export interface AskUIComponent {
   type: 'user_input_required';
   question: string;
   options: AskOption[];
   multi_select: boolean;
+  cards?: CardEnvelope[];
 }
 
 export interface DataTableColumn {

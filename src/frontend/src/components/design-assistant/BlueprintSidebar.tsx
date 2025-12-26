@@ -3,10 +3,18 @@
  */
 
 import clsx from 'clsx';
-import type { DesignSessionState, DesignPhase } from '../../types/design-session';
+import type {
+  DesignSessionState,
+  DesignPhase,
+  CardEnvelope,
+} from '../../types/design-session';
+import { CardStack } from './CardStack';
 
 interface BlueprintSidebarProps {
   state: DesignSessionState | null;
+  cards?: CardEnvelope[];
+  activePersonaId?: string | null;
+  onAction?: (actionId: string, cardId: string) => void;
 }
 
 const phaseLabels: Record<DesignPhase, string> = {
@@ -23,7 +31,7 @@ const phaseOrder: DesignPhase[] = [
   'complete',
 ];
 
-export function BlueprintSidebar({ state }: BlueprintSidebarProps) {
+export function BlueprintSidebar({ state, cards, activePersonaId, onAction }: BlueprintSidebarProps) {
   if (!state) {
     return (
       <div className="w-80 bg-gray-50 border-l border-gray-200 p-6">
@@ -48,57 +56,69 @@ export function BlueprintSidebar({ state }: BlueprintSidebarProps) {
         </p>
       </div>
 
-      {/* Phase Progress */}
-      <div className="p-4 border-b border-gray-200">
-        <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
-          Progress
-        </h3>
-        <div className="space-y-2">
-          {phaseOrder.map((phase, index) => {
-            const isComplete = index < currentPhaseIndex;
-            const isCurrent = phase === state.phase;
+      {/* Phase Progress (fallback when no cards present) */}
+      {!cards?.length && (
+        <div className="p-4 border-b border-gray-200">
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
+            Progress
+          </h3>
+          <div className="space-y-2">
+            {phaseOrder.map((phase, index) => {
+              const isComplete = index < currentPhaseIndex;
+              const isCurrent = phase === state.phase;
 
-            return (
-              <div key={phase} className="flex items-center gap-3">
-                <div
-                  className={clsx(
-                    'w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium',
-                    isComplete && 'bg-green-500 text-white',
-                    isCurrent && 'bg-blue-500 text-white',
-                    !isComplete && !isCurrent && 'bg-gray-200 text-gray-500'
-                  )}
-                >
-                  {isComplete ? (
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                  ) : (
-                    index + 1
-                  )}
+              return (
+                <div key={phase} className="flex items-center gap-3">
+                  <div
+                    className={clsx(
+                      'w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium',
+                      isComplete && 'bg-green-500 text-white',
+                      isCurrent && 'bg-blue-500 text-white',
+                      !isComplete && !isCurrent && 'bg-gray-200 text-gray-500'
+                    )}
+                  >
+                    {isComplete ? (
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    ) : (
+                      index + 1
+                    )}
+                  </div>
+                  <span
+                    className={clsx(
+                      'text-sm',
+                      isCurrent ? 'font-medium text-gray-900' : 'text-gray-500'
+                    )}
+                  >
+                    {phaseLabels[phase]}
+                  </span>
                 </div>
-                <span
-                  className={clsx(
-                    'text-sm',
-                    isCurrent ? 'font-medium text-gray-900' : 'text-gray-500'
-                  )}
-                >
-                  {phaseLabels[phase]}
-                </span>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Card-Orchestrated Snapshot */}
+      {cards?.length ? (
+        <div className="border-b border-gray-200 p-4">
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">
+            Current Step
+          </h3>
+          <CardStack cards={cards} activePersonaId={activePersonaId} onAction={onAction} />
+        </div>
+      ) : null}
 
       {/* Blueprint Details */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">

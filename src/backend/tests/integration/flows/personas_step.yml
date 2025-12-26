@@ -1,0 +1,151 @@
+# Personas Step Compliance Flow Spec
+#
+# This flow tests that the LLM outputs correct card types at the Personas step.
+# It verifies prompt compliance, not just plumbing.
+#
+# Usage (developer-supervised, NOT CI):
+#   uv run python -m clara.testing.flow_runner personas_step
+#
+# Or interactively with Claude Code:
+#   "Run the personas flow compliance test"
+
+name: personas_step_compliance
+description: |
+  Verify the LLM outputs correct card types at the Personas step.
+  This tests prompt compliance, not plumbing.
+
+  The critical assertion: At the personas step, the main card MUST have
+  type: "personas", NOT type: "info". This was the root cause of the
+  persona card bug that was previously fixed on the frontend.
+
+version: "1.0"
+
+context:
+  goal: "Build an IT incident discovery system"
+  project_type: "ma_due_diligence"
+
+session:
+  project_id: test-personas-flow
+
+steps:
+  - name: initial_goal
+    description: "Start the flow by stating the project goal"
+    user_says: "I want to build an IT incident discovery system for M&A due diligence"
+    expect:
+      phase: goal_understanding
+      event: CUSTOM
+      event_name: clara:ask
+      cards:
+        must_include_types:
+          - stepper
+          - snapshot
+        # domain_setup OR info is acceptable at this stage
+        optional_types:
+          - domain_setup
+          - info
+
+  - name: confirm_domain
+    description: "Confirm the domain setup"
+    user_says: "Confirm"
+    expect:
+      phase: goal_understanding
+      event: CUSTOM
+      event_name: clara:ask
+
+  - name: skip_context
+    description: "Skip context file upload"
+    user_says: "Skip"
+    expect:
+      phase: agent_configuration
+      event: CUSTOM
+      event_name: clara:ask
+
+  - name: personas_step
+    description: "Arrive at the personas selection step - CRITICAL TEST"
+    user_says: "Continue"
+    expect:
+      phase: agent_configuration
+      event: CUSTOM
+      event_name: clara:ask
+      cards:
+        must_include_types:
+          - stepper
+        # CRITICAL: Main card MUST be type "personas", NOT "info"
+        must_include:
+          - type: personas
+            body:
+              personas:
+                min_count: 2
+        stepper_current_step_contains: "Persona"
+
+assertions:
+  # Primary assertion - this is the bug we're testing for
+  - name: personas_card_type
+    description: "Card type must be 'personas', not 'info'"
+    critical: true
+    check: |
+      cards = event.value.cards
+      personas_card = next((c for c in cards if c.type == "personas"), None)
+      assert personas_card is not None, (
+        f"Expected card type 'personas' but found types: "
+        f"{[c.type for c in cards]}. "
+        f"This is the persona card bug - LLM outputting 'info' instead of 'personas'."
+      )
+
+  # Secondary assertion - verify personas content
+  - name: personas_content
+    description: "Personas card must contain at least 2 personas"
+    critical: true
+    check: |
+      personas_card = next((c for c in cards if c.type == "personas"), None)
+      if personas_card:
+        personas = personas_card.body.get("personas", [])
+        assert len(personas) >= 2, (
+          f"Expected at least 2 personas, got {len(personas)}"
+        )
+
+  # Tertiary assertion - stepper step label
+  - name: stepper_step
+    description: "Stepper should show Personas as current step"
+    critical: false
+    check: |
+      stepper = next((c for c in cards if c.type == "stepper"), None)
+      if stepper:
+        current = stepper.body.get("current_step", "")
+        steps = stepper.body.get("steps", [])
+        active_step = next((s for s in steps if s.get("status") == "active"), None)
+        if active_step:
+          assert "persona" in active_step.get("label", "").lower(), (
+            f"Expected 'Persona' in active step, got: {active_step.get('label')}"
+          )
+
+compliance_notes: |
+  If the LLM outputs type: "info" instead of type: "personas" at the
+  personas step, this is a prompt compliance failure.
+
+  Recommended fixes (in priority order):
+
+  1. Add explicit constraint to prompt:
+     File: prompts/phase2_agent_configuration.txt
+     Add after the personas section:
+     ```
+     ## CRITICAL: Card Type Requirements
+     At the Personas step, the main card MUST have type: "personas"
+     Do NOT use type: "info" for persona cards.
+     ```
+
+  2. Add example to prompt showing correct output:
+     Include a complete example of the expected JSON structure
+     with type: "personas" explicitly shown.
+
+  3. Fix frontend to be lenient (already done in CardStack.tsx):
+     The frontend now detects persona content even when type is wrong,
+     but the LLM should still output the correct type.
+
+failure_actions:
+  - action: show_event_trace
+    description: "Display the actual event for debugging"
+  - action: suggest_prompt_fix
+    target_file: "clara/agents/prompts/phase2_agent_configuration.txt"
+  - action: offer_retry
+    description: "Re-run this step after fix is applied"

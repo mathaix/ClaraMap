@@ -12,6 +12,7 @@ import {
   BlueprintSidebar,
   DebugPanel,
 } from '../components/design-assistant';
+import type { PersonaEntry } from '../components/design-assistant/CardStack';
 import type { DataTableSubmission, ProcessMapSubmission } from '../types/design-session';
 
 export function DesignAssistantPage() {
@@ -21,6 +22,7 @@ export function DesignAssistantPage() {
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
 
   const {
     sessionId,
@@ -31,6 +33,7 @@ export function DesignAssistantPage() {
     messages,
     sessionState,
     pendingUIComponent,
+    sidebarCards,
     debugEvents,
     connect,
     sendMessage,
@@ -64,6 +67,12 @@ export function DesignAssistantPage() {
   const handleOptionSelect = (optionId: string) => {
     clearPendingUIComponent(); // Clear UI component when user interacts
     sendMessage(`I chose: ${optionId}`);
+  };
+
+  const handlePersonaSelect = (persona: PersonaEntry) => {
+    clearPendingUIComponent();
+    setActivePersonaId(persona.id);
+    sendMessage(`Continue with persona: ${persona.label}`);
   };
 
   const handleQuickConfirm = (answer: 'Yes' | 'No') => {
@@ -318,6 +327,8 @@ export function DesignAssistantPage() {
                       key={message.id}
                       message={message}
                       onOptionSelect={handleOptionSelect}
+                      onPersonaSelect={handlePersonaSelect}
+                      activePersonaId={activePersonaId}
                       onQuickConfirm={handleQuickConfirm}
                       isLastAssistantMessage={isLastAssistantMessage}
                       onTableSubmit={handleTableSubmit}
@@ -348,7 +359,11 @@ export function DesignAssistantPage() {
       </div>
 
       {/* Blueprint Sidebar */}
-      <BlueprintSidebar state={sessionState} />
+      <BlueprintSidebar
+        state={sessionState}
+        cards={sidebarCards}
+        activePersonaId={activePersonaId}
+      />
 
       {/* Debug Panel */}
       <DebugPanel

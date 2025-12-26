@@ -146,6 +146,82 @@ def sanitize_ask_options(options: list[dict[str, Any]] | Any) -> list[dict[str, 
     return sanitized
 
 
+def _sanitize_card_value(value: Any, depth: int = 0) -> Any:
+    """Sanitize nested card payload values."""
+    if depth > 4:
+        return None
+    if isinstance(value, str):
+        return InputSanitizer.sanitize_description(value)
+    if isinstance(value, list):
+        cleaned = [_sanitize_card_value(item, depth + 1) for item in value]
+        return [item for item in cleaned if item is not None][:50]
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            key_str = InputSanitizer.sanitize_name(str(key)) or str(key)
+            cleaned_value = _sanitize_card_value(item, depth + 1)
+            if cleaned_value is not None:
+                cleaned[key_str] = cleaned_value
+        return cleaned
+    return value
+
+
+def sanitize_cards(cards: list[dict[str, Any]] | Any) -> list[dict[str, Any]]:
+    """Normalize card payloads for card-orchestrated UI."""
+    if not isinstance(cards, list):
+        return []
+    sanitized: list[dict[str, Any]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        card_id = InputSanitizer.sanitize_name(card.get("card_id", "")) or f"card_{len(sanitized) + 1}"
+        card_type = InputSanitizer.sanitize_name(card.get("type", "")) or "card"
+        title = InputSanitizer.sanitize_description(card.get("title", "")) or "Card"
+        subtitle = InputSanitizer.sanitize_description(card.get("subtitle", "")) or ""
+        body = _sanitize_card_value(card.get("body", {}))
+
+        entry: dict[str, Any] = {
+            "card_id": card_id,
+            "type": card_type,
+            "title": title,
+            "body": body if body is not None else {},
+        }
+
+        if subtitle:
+            entry["subtitle"] = subtitle
+
+        actions = card.get("actions", [])
+        if isinstance(actions, list):
+            cleaned_actions: list[dict[str, Any]] = []
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                action_id = InputSanitizer.sanitize_name(action.get("id", "")) or f"action_{len(cleaned_actions) + 1}"
+                label = InputSanitizer.sanitize_description(action.get("label", "")) or "Action"
+                action_entry: dict[str, Any] = {"id": action_id, "label": label}
+                style = InputSanitizer.sanitize_name(action.get("style", ""))
+                if style:
+                    action_entry["style"] = style
+                cleaned_actions.append(action_entry)
+            if cleaned_actions:
+                entry["actions"] = cleaned_actions
+
+        helper = card.get("helper")
+        if isinstance(helper, dict):
+            why_this = InputSanitizer.sanitize_array(helper.get("why_this", []), max_item_length=200)
+            risks = InputSanitizer.sanitize_array(helper.get("risks_if_skipped", []), max_item_length=200)
+            helper_entry: dict[str, Any] = {}
+            if why_this:
+                helper_entry["why_this"] = why_this
+            if risks:
+                helper_entry["risks_if_skipped"] = risks
+            if helper_entry:
+                entry["helper"] = helper_entry
+
+        sanitized.append(entry)
+    return sanitized
+
+
 def ensure_other_option(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Append an Other option if missing, and mark it as requiring input."""
     for option in options:
@@ -225,6 +301,50 @@ AskSchema = {
     "type": "object",
     "properties": {
         "question": {"type": "string", "description": "Question to ask the user"},
+        "cards": {
+            "type": "array",
+            "description": "Optional card stack to render above the question.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string"},
+                    "type": {"type": "string"},
+                    "title": {"type": "string"},
+                    "subtitle": {"type": "string"},
+                    "body": {
+                        "type": "object",
+                        "description": "Card body payload.",
+                        "additionalProperties": True,
+                    },
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "style": {"type": "string"},
+                            },
+                            "required": ["id", "label"],
+                        },
+                    },
+                    "helper": {
+                        "type": "object",
+                        "properties": {
+                            "why_this": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "risks_if_skipped": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["card_id", "type", "title", "body"],
+            },
+        },
         "options": {
             "type": "array",
             "items": {
@@ -251,6 +371,50 @@ SelectionListSchema = {
     "type": "object",
     "properties": {
         "question": {"type": "string", "description": "Question to ask the user"},
+        "cards": {
+            "type": "array",
+            "description": "Optional card stack to render above the question.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string"},
+                    "type": {"type": "string"},
+                    "title": {"type": "string"},
+                    "subtitle": {"type": "string"},
+                    "body": {
+                        "type": "object",
+                        "description": "Card body payload.",
+                        "additionalProperties": True,
+                    },
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "style": {"type": "string"},
+                            },
+                            "required": ["id", "label"],
+                        },
+                    },
+                    "helper": {
+                        "type": "object",
+                        "properties": {
+                            "why_this": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "risks_if_skipped": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["card_id", "type", "title", "body"],
+            },
+        },
         "options": {
             "type": "array",
             "items": {
@@ -591,12 +755,15 @@ def create_clara_tools(session_id: str):
         # Store UI component in session state for frontend access
         state = get_session_state(session_id)
         options = sanitize_ask_options(args.get("options", []))
+        cards = sanitize_cards(args.get("cards", []))
         ui_component = {
             "type": "user_input_required",
             "question": args["question"],
             "options": options,
             "multi_select": args.get("multi_select", False),
         }
+        if cards:
+            ui_component["cards"] = cards
         state["pending_ui_component"] = ui_component
         # UI is rendered via CUSTOM event - just return confirmation
         return {
@@ -612,12 +779,15 @@ def create_clara_tools(session_id: str):
         logger.info(f"[{session_id}] Requesting selection list: {args['question']}")
         state = get_session_state(session_id)
         options = ensure_other_option(sanitize_ask_options(args.get("options", [])))
+        cards = sanitize_cards(args.get("cards", []))
         ui_component = {
             "type": "user_input_required",
             "question": args["question"],
             "options": options,
             "multi_select": args.get("multi_select", False),
         }
+        if cards:
+            ui_component["cards"] = cards
         state["pending_ui_component"] = ui_component
         return {
             "content": [{

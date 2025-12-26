@@ -106,7 +106,7 @@ class BasePhaseAgent(ABC):
 
         Subclasses can override this to add phase-specific handling.
         """
-        from clara.agents.tools import ensure_other_option, sanitize_ask_options
+        from clara.agents.tools import ensure_other_option, sanitize_ask_options, sanitize_cards
 
         tool_name = input_data.get("tool_name", input_data.get("name", "unknown"))
         tool_input = input_data.get("tool_input", input_data.get("input", {}))
@@ -121,12 +121,15 @@ class BasePhaseAgent(ABC):
         # Handle ask tool - emit CUSTOM event with UI component
         if tool_name == "mcp__clara__ask":
             options = sanitize_ask_options(tool_input.get("options", []))
+            cards = sanitize_cards(tool_input.get("cards", []))
             ui_component = {
                 "type": "user_input_required",
                 "question": tool_input.get("question", ""),
                 "options": options,
                 "multi_select": tool_input.get("multi_select", False),
             }
+            if cards:
+                ui_component["cards"] = cards
             await self._event_queue.put(AGUIEvent(
                 type="CUSTOM",
                 data={"name": "clara:ask", "value": ui_component}
@@ -139,12 +142,15 @@ class BasePhaseAgent(ABC):
             options = ensure_other_option(
                 sanitize_ask_options(tool_input.get("options", []))
             )
+            cards = sanitize_cards(tool_input.get("cards", []))
             ui_component = {
                 "type": "user_input_required",
                 "question": tool_input.get("question", ""),
                 "options": options,
                 "multi_select": tool_input.get("multi_select", False),
             }
+            if cards:
+                ui_component["cards"] = cards
             await self._event_queue.put(AGUIEvent(
                 type="CUSTOM",
                 data={"name": "clara:ask", "value": ui_component}
